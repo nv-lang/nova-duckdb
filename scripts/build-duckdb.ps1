@@ -24,18 +24,36 @@
 #   CMake >= 3.20, Ninja, LLVM (clang-cl), Visual Studio Build Tools for vcvars64.
 #   8 GB RAM. Expect 40-60 minutes on 16 cores with a cold cache.
 #
-# Measured 2026-09-08 on the machine this package was written on: CMake and Ninja
-# were ABSENT, and `C:\Program Files\Microsoft Visual Studio\2022` was empty even
-# though the spike had used its vcvars64 two days earlier. The script therefore
-# checks for its tools and says which one is missing rather than failing halfway
-# through a CMake configure.
+# CORRECTION, 2026-09-08 evening. This block used to say CMake and Ninja were ABSENT
+# on this machine and that `C:\Program Files\Microsoft Visual Studio\2022` was empty
+# even though the spike had used its vcvars64. Both halves were wrong in the same way:
+# I looked on drive C. Visual Studio 2022 Community is on **D**, and CMake 3.31.6-msvc6
+# and Ninja 1.12.1 are bundled inside it -- neither is on PATH, and vcvars64.bat puts
+# both there when it runs. A negative answer sounds exactly as confident as a true one,
+# which is why the script now SEARCHES for vcvars64 instead of naming one path, and
+# checks for its tools THROUGH vcvars rather than in the shell that will not run them.
 
 [CmdletBinding()]
 param(
-  [string]$VcVars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat",
+  # Empty means "find it" -- see FindVcVars below. Pass a path to override.
+  [string]$VcVars = "",
   [string]$Llvm   = "C:\Program Files\LLVM\bin",
   [switch]$Force
 )
+
+function FindVcVars {
+  # Both drives and all four editions, because the one thing this script must not do
+  # is announce that a tool is missing when it is installed somewhere else. That
+  # exact mistake cost this project a request to the owner to install what was
+  # already there.
+  foreach ($drive in @("D:", "C:")) {
+    foreach ($ed in @("Community", "Professional", "Enterprise", "BuildTools")) {
+      $p = "$drive\Program Files\Microsoft Visual Studio\2022\$ed\VC\Auxiliary\Build\vcvars64.bat"
+      if (Test-Path $p) { return $p }
+    }
+  }
+  return ""
+}
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -60,10 +78,15 @@ function Need($name, $path) {
   if (-not (Test-Path $path)) { throw "$name not found at '$path'. See the Requirements block at the top of this script." }
 }
 
-function NeedCmd($name) {
-  if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
-    throw "$name is not on PATH. This script needs CMake >= 3.20 and Ninja; neither ships with LLVM or with Git for Windows."
+function NeedCmdVia($vcvars, $name) {
+  # Ask the shell that will actually run it. Visual Studio bundles CMake and Ninja
+  # and vcvars64 puts them on PATH; PowerShell's own PATH has neither, so checking
+  # here would refuse a build that works.
+  $found = cmd /c "call `"$vcvars`" >nul 2>&1 && where $name 2>nul"
+  if ($LASTEXITCODE -ne 0 -or -not $found) {
+    throw "$name is not available even after vcvars64. This script needs CMake >= 3.20 and Ninja; Visual Studio bundles both under Common7\IDE\CommonExtensions\Microsoft\CMake."
   }
+  ($found | Select-Object -First 1)
 }
 
 # ── the cache stamp ──────────────────────────────────────────────────────────
@@ -92,10 +115,15 @@ if ((-not $Force) -and (Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim()
 # ── checks before the forty minutes ─────────────────────────────────────────
 
 Need "the DuckDB submodule" (Join-Path $submodule "CMakeLists.txt")
+if (-not $VcVars) { $VcVars = FindVcVars }
+if (-not $VcVars) {
+  throw "vcvars64.bat not found on D: or C: for any 2022 edition. Pass -VcVars <path>."
+}
+"vcvars64: $VcVars"
 Need "vcvars64.bat" $VcVars
 Need "clang-cl" (Join-Path $Llvm "clang-cl.exe")
-NeedCmd "cmake"
-NeedCmd "ninja"
+"cmake:  $(NeedCmdVia $VcVars 'cmake')"
+"ninja:  $(NeedCmdVia $VcVars 'ninja')"
 
 New-Item -ItemType Directory -Force -Path $lib | Out-Null
 
