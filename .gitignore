@@ -8,3 +8,5 @@ target/
 *.o
 # Generated C beside the sources, as in every Nova package here.
 src/*.c
+# D420 local development override: names a machine-specific path.
+nova.override.toml

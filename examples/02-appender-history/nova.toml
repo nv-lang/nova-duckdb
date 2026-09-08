@@ -1,0 +1,17 @@
+# The path this package exists for: a time series written fast and read back with
+# the functions that made the hour-long build worth it.
+#
+# Release form in [dependencies], local path in nova.override.toml (D420) -- see the
+# note in ../01-hello/nova.toml for why the compiler refuses a bare `path`.
+
+[lib]
+src = "."
+
+[package]
+name = "appender_history"
+version = "0.0.0"
+description = "nova-duckdb: 100 000 rows through the Appender, then time_bucket and CSV"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+duckdb = { git = "https://github.com/nv-lang/nova-duckdb", version = "0.1" }

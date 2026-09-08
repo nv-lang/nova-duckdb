@@ -1,0 +1,82 @@
+// 01-hello — the smallest program that proves the binding works.
+//
+//   nova run examples/01-hello/hello_duckdb.nv
+//
+// It opens a real file rather than `:memory:` on purpose: the interesting failures
+// of a database binding are on disk. It leaves the file behind, so a person can
+// open it with the DuckDB shell and see that the types are real.
+//
+// Every column here is one 01.2 §3 actually stores. That is the point of the
+// example: a binding that could only carry integers and strings would not have been
+// worth an hour of build time.
+
+module hello_duckdb
+
+import duckdb.{Database, Connection, QueryResult, DbOptions, DuckError}
+import duckdb.types.{Value, DecimalValue, timestamp_of_micros}
+
+/// Text out of a cell, or a placeholder — an example should print something
+/// readable rather than throw on an unexpected shape.
+fn text_at(r QueryResult, col int) Fail[DuckError] -> str {
+    match r.value(0, col) {
+        Value.Text(s) => s
+        Value.Null => "(null)"
+        _ => "(not text)"
+    }
+}
+
+fn int_at(r QueryResult, col int) Fail[DuckError] -> i64 {
+    match r.value(0, col) {
+        Value.Int(n) => n
+        _ => 0 - 1
+    }
+}
+
+fn body(con Connection) Fail[DuckError] -> () {
+    ro _ = con.exec("CREATE TABLE IF NOT EXISTS sample (at TIMESTAMPTZ NOT NULL, kind VARCHAR(32) NOT NULL CHECK (kind IN ('session','weekly_all','weekly_scoped')), percent TINYINT NOT NULL CHECK (percent BETWEEN 0 AND 100), locked BOOLEAN NOT NULL DEFAULT false, rate DECIMAL(6,3))")
+    ro _ = con.exec("DELETE FROM sample")
+
+    consume st = con.prepare("INSERT INTO sample VALUES (?, ?, ?, ?, ?)")
+    defer { st.finalize() }
+    // 2.300 as an exact decimal: mantissa 2300, scale 3. Never an f64 — see the
+    // package README for why that matters for a percentage.
+    st.bind([
+        Value.Instant(timestamp_of_micros(1757347622000000)),
+        Value.Text("weekly_scoped"),
+        Value.Int(74),
+        Value.Bool(false),
+        Value.Dec(DecimalValue.of(0, 2300, 3)),
+    ])
+    consume ins = st.execute()
+    ins.close()
+
+    // Read it back through `date_trunc`, which exists only because this package
+    // links `core_functions` — the whole reason the build takes an hour.
+    consume r = con.query("SELECT strftime(date_trunc('hour', at), '%Y-%m-%d %H:%M') AS hour, kind, percent, CAST(rate AS VARCHAR) AS rate FROM sample")
+    defer { r.close() }
+
+    print("columns: ${r.cols()}, rows: ${r.rows()}")
+    mut c = 0
+    while c < r.cols() {
+        ro col = r.column(c)
+        print("  ${col.name} : ${col.kind.to_str()}")
+        c += 1
+    }
+    print("hour    = ${text_at(r, 0)}")
+    print("kind    = ${text_at(r, 1)}")
+    print("percent = ${int_at(r, 2)}")
+    // The rate comes back as TEXT, not as a float: a DECIMAL that goes through an
+    // f64 to be printed is how 2.300 becomes 2.2999999.
+    print("rate    = ${text_at(r, 3)}")
+}
+
+fn main() Io -> () {
+    with Fail[DuckError] = |e| { print("duckdb failed: ${e.message()}") } {
+        consume db = Database.open("hello.duckdb", DbOptions.defaults()) {
+            consume con = db.connect() {
+                body(con)
+            }
+        }
+    }
+    print("duckdb ${Database.version()}")
+}

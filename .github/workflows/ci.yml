@@ -1,0 +1,128 @@
+# CI for nova-duckdb.
+#
+# Source: subplan 01.4 §1 (what CI does) and §8 (the risk it is shaped around).
+#
+# ── The shape, and the risk it answers ──────────────────────────────────────
+#
+# Building DuckDB from the repository with two extensions takes 40-60 minutes on
+# sixteen cores. A CI that does that on every push is a CI nobody waits for, and on
+# a hosted runner it is a CI that hits the job time limit. So the build is SEPARATE
+# and MANUAL (`build-duckdb`), it uploads `native/lib` as an artifact, and the
+# ordinary run (`test`) restores that artifact and never compiles DuckDB at all.
+#
+# The cache key is the submodule commit plus the flags plus the compiler version --
+# the three things that change the output. A DuckDB bump therefore means one manual
+# run of `build-duckdb`, and every push after it is fast again.
+#
+# NOTHING HERE HAS EVER RUN. The package has no remote yet, so this file has not
+# been executed by anything; it is written from the plan and from what the local
+# scripts do. First green run replaces this paragraph with the timings §7 asks for.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The long one. Run by hand after a DuckDB bump; everything else consumes its
+  # artifact.
+  build-duckdb:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Tools
+        uses: lukka/get-cmake@latest
+      - name: Build DuckDB (Windows)
+        if: runner.os == 'Windows'
+        run: pwsh -File scripts/build-duckdb.ps1
+      - name: Build DuckDB (Linux)
+        if: runner.os == 'Linux'
+        run: ./scripts/build-duckdb.sh
+      - name: Upload the static libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckdb-lib-${{ runner.os }}
+          path: |
+            native/lib/
+            scripts/libs-manifest.txt
+          retention-days: 90
+
+  test:
+    if: github.event_name != 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # The cache first: a hit means the libraries are already here and the download
+      # below is skipped. `native/lib/.built` carries the key the local scripts
+      # write, so a developer's cache and CI's agree on what "already built" means.
+      - name: Restore native/lib
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            native/lib
+            scripts/libs-manifest.txt
+          key: duckdb-${{ runner.os }}-${{ hashFiles('.gitmodules', 'scripts/build-duckdb.*') }}-${{ hashFiles('native/duckdb/CMakeLists.txt') }}
+
+      - name: Fetch the libraries from the last build-duckdb run
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ci.yml
+          name: duckdb-lib-${{ runner.os }}
+          path: .
+          if_no_artifact_found: fail
+
+      - name: Nova toolchain
+        run: echo "the nova CLI comes from the monorepo checkout; see nova.sh"
+
+      - name: Typecheck
+        run: |
+          ./nova.sh check src/ffi.nv
+          ./nova.sh check src/types.nv
+          ./nova.sh check src/duckdb.nv
+          ./nova.sh check src/sqltag.nv
+
+      - name: Tests
+        run: ./nova.sh test src
+
+      - name: Examples
+        run: |
+          ./nova.sh build examples/01-hello/hello_duckdb.nv -o hello
+          ./nova.sh build examples/02-appender-history/appender_history.nv -o history
+
+      # §7 wants the binary size in the report on every stage, because +36 MB per
+      # platform was the price the owner accepted and a silent drift away from it
+      # should be visible.
+      - name: Binary size
+        run: |
+          ls -l hello history || dir hello.exe history.exe
+
+      # The spike's CRT check, kept as a regression: no vcruntime, msvcp or ucrtbase
+      # among the imports means the CRT is static, as Nova's runtime is. A toolchain
+      # bump that breaks that would otherwise be found by a user.
+      - name: CRT is static (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $imports = & "C:\Program Files\LLVM\bin\llvm-readobj.exe" --coff-imports hello.exe
+          if ($imports -match 'vcruntime|msvcp|ucrtbase') { throw "a CRT DLL is imported; the build is no longer statically linked" }
+          "CRT static: ok"

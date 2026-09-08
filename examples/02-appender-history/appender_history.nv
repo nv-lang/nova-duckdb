@@ -1,0 +1,94 @@
+// 02-appender-history — the path this package exists for.
+//
+//   nova run examples/02-appender-history/appender_history.nv
+//
+// A hundred thousand samples written through the Appender, then read back with
+// `time_bucket` and `date_trunc`, then exported to CSV. Every one of those three is
+// a reason the build takes an hour rather than eleven minutes:
+//
+//   * the Appender is the difference between ten milliseconds and three minutes —
+//     a row at a time through `INSERT` costs about two milliseconds in DuckDB,
+//     which is a columnar engine and does not pretend otherwise;
+//   * `time_bucket` and `date_trunc` live in `core_functions`, which the
+//     amalgamation does not contain;
+//   * `COPY … TO` writes the CSV inside the engine, so a million rows never pass
+//     through Nova at all.
+//
+// The numbers it prints are the ones worth comparing against the spike of
+// 2026-09-06: 10 000 appended rows took 8.7-12.0 ms there, 10 000 one-by-one
+// inserts took 19.5-21.4 s.
+
+module appender_history
+
+import duckdb.{Database, Connection, QueryResult, DbOptions, DuckError}
+import duckdb.types.{Value, timestamp_of_micros}
+import std.time.duration.{Timestamp}
+
+const ROWS = 100_000
+/// 2026-09-08T16:00:00Z, in microseconds.
+const BASE_US = 1757347200000000
+
+fn text_at(r QueryResult, row int, col int) Fail[DuckError] -> str {
+    match r.value(row, col) {
+        Value.Text(s) => s
+        Value.Null => "(null)"
+        _ => "(not text)"
+    }
+}
+
+fn int_at(r QueryResult, row int, col int) Fail[DuckError] -> i64 {
+    match r.value(row, col) {
+        Value.Int(n) => n
+        _ => 0 - 1
+    }
+}
+
+fn body(con Connection) Fail[DuckError] Time -> () {
+    ro _ = con.exec("CREATE TABLE IF NOT EXISTS sample (at TIMESTAMP NOT NULL, window_id INTEGER NOT NULL, percent TINYINT NOT NULL)")
+    ro _ = con.exec("DELETE FROM sample")
+
+    // ── write ────────────────────────────────────────────────────────────────
+    ro t0 = Timestamp.now()
+    consume app = con.appender("", "sample") {
+        mut i = 0
+        while i < ROWS {
+            // One sample every five minutes across four windows -- the shape
+            // claude-limits actually stores.
+            app.row([
+                Value.Instant(timestamp_of_micros(BASE_US + (i as i64) * 300_000_000)),
+                Value.Int(((i % 4) + 1) as i64),
+                Value.Int((i % 101) as i64),
+            ])
+            i += 1
+        }
+        app.flush()
+    }
+    ro t1 = Timestamp.now()
+    print("appended ${ROWS} rows in ${(t1.minus(t0)).millis()} ms")
+
+    // ── read back through the extension functions ───────────────────────────
+    consume r = con.query("SELECT strftime(time_bucket(INTERVAL 1 HOUR, at), '%Y-%m-%d %H:%M') AS hour, count(*) AS n, max(percent) AS peak FROM sample GROUP BY 1 ORDER BY 1 LIMIT 3")
+    defer { r.close() }
+    print("first three hourly buckets:")
+    mut row = 0
+    while row < r.rows() {
+        print("  ${text_at(r, row, 0)}  n=${int_at(r, row, 1)}  peak=${int_at(r, row, 2)}")
+        row += 1
+    }
+
+    // ── export, inside the engine ───────────────────────────────────────────
+    ro t2 = Timestamp.now()
+    ro _ = con.exec("COPY (SELECT at, window_id, percent FROM sample ORDER BY at) TO 'history.csv' (HEADER, DELIMITER ',')")
+    ro t3 = Timestamp.now()
+    print("exported to history.csv in ${(t3.minus(t2)).millis()} ms")
+}
+
+fn main() Io Time -> () {
+    with Fail[DuckError] = |e| { print("duckdb failed: ${e.message()}") } {
+        consume db = Database.open("history.duckdb", DbOptions.defaults()) {
+            consume con = db.connect() {
+                body(con)
+            }
+        }
+    }
+}

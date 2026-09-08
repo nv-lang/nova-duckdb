@@ -1,0 +1,21 @@
+# The smallest thing that proves the binding works end to end: open a file, make a
+# table with the types 01.2 actually needs, write a row, read it back.
+#
+# The dependency is declared in its RELEASE form (git + version), and the local
+# working copy is supplied by `nova.override.toml`, which is not committed. That is
+# D420's rule and the compiler enforces it: a bare `path` in `[dependencies]` is
+# refused, because a manifest that points outside the repository cannot promise the
+# target travels with it. The override is what lets the example build here today,
+# before the package has a remote or a tag.
+
+[lib]
+src = "."
+
+[package]
+name = "hello_duckdb"
+version = "0.0.0"
+description = "nova-duckdb: open, create with real types, insert, select"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+duckdb = { git = "https://github.com/nv-lang/nova-duckdb", version = "0.1" }
