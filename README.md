@@ -101,7 +101,8 @@ reads back *different* from what was written:
 
 ```sh
 git submodule update --init --depth 1 native/duckdb
-./scripts/build-duckdb.sh            # or: pwsh -File scripts/build-duckdb.ps1
+./scripts/build-duckdb.sh            # or: pwsh -File scripts/build-duckdb.ps1        # PowerShell 7; where it is absent:
+powershell -ExecutionPolicy Bypass -File scripts\build-duckdb.ps1
 nova test src
 ```
 

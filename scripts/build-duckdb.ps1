@@ -5,8 +5,15 @@
 # Run once. The result is a set of static libraries plus `scripts/libs-manifest.txt`
 # naming them in link order; `nova.toml`'s `[ffi] libs` is filled from that file.
 #
-#   pwsh -File scripts/build-duckdb.ps1
-#   pwsh -File scripts/build-duckdb.ps1 -Force        # ignore the cache stamp
+#   pwsh -File scripts/build-duckdb.ps1                                   # PowerShell 7
+#   powershell -ExecutionPolicy Bypass -File scripts\build-duckdb.ps1     # Windows PowerShell 5.1
+#   ... -Force                                                            # ignore the cache stamp
+#
+# MEASURED 2026-09-08, at the first real attempt: `pwsh` is ABSENT on the machine this
+# package was written on, and the call died in under a second with
+# CommandNotFoundException -- in the first minute of a forty-minute machine slot
+# somebody else was waiting for. The 5.1 line is what runs here; the script uses
+# nothing newer.
 #
 # ── Why the amalgamation is not enough ──────────────────────────────────────
 #

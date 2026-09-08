@@ -101,7 +101,8 @@ consume r = con.run(sql`SELECT * FROM sample WHERE percent > ${threshold}`) { �
 
 ```sh
 git submodule update --init --depth 1 native/duckdb
-./scripts/build-duckdb.sh            # или: pwsh -File scripts/build-duckdb.ps1
+./scripts/build-duckdb.sh            # или: pwsh -File scripts/build-duckdb.ps1        # PowerShell 7; where it is absent:
+powershell -ExecutionPolicy Bypass -File scripts\build-duckdb.ps1
 nova test src
 ```
 
