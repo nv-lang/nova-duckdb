@@ -16,6 +16,15 @@
  *    exception is `ddb_open`, which applies the five settings of §3 that must
  *    not be reachable from Nova at all -- see its comment.
  *
+ * ── Handles come back as the RETURN VALUE ───────────────────────────────────
+ *
+ * A call that produces a handle returns it (NULL on failure) and reports the code
+ * through an `int *out_err`. Not the other way round, and the reason is on the Nova
+ * side: an out-pointer for a handle needs a pre-initialised variable of a
+ * pointer-newtype, and Nova has no null literal for one. An `int` initialises as 0
+ * and needs nothing. `std/net/ffi.nv` shapes `net_tcp_listen`/`accept`/`connect`
+ * exactly this way.
+ *
  * ── The shape of every function ─────────────────────────────────────────────
  *
  * Return value is `int`: 0 on success, non-zero on failure. The message of a
@@ -142,14 +151,14 @@ extern "C" {
  * it, so no Nova code is given the chance.
  *
  * `temp_dir` empty means the database's own directory; it is never `~/.duckdb`. */
-int ddb_open(const uint8_t *path, int path_len,
-             const uint8_t *temp_dir, int temp_dir_len,
-             const uint8_t *memory_limit, int memory_limit_len,
-             int threads, int read_only,
-             const uint8_t *encryption_key, int encryption_key_len,
-             void **out_db);
+void *ddb_open(const uint8_t *path, int path_len,
+               const uint8_t *temp_dir, int temp_dir_len,
+               const uint8_t *memory_limit, int memory_limit_len,
+               int threads, int read_only,
+               const uint8_t *encryption_key, int encryption_key_len,
+               int *out_err);
 
-int ddb_connect(void *db, void **out_conn);
+void *ddb_connect(void *db, int *out_err);
 void ddb_disconnect(void *conn);
 void ddb_close(void *db);
 
@@ -171,7 +180,7 @@ int ddb_exec(void *conn, const uint8_t *sql, int sql_len, int64_t *out_changed);
 
 /* Run a query and materialise the whole result. Version 0.1 does not stream
  * (01.4 §4.1) -- a chunked reader is added when a consumer needs one. */
-int ddb_query(void *conn, const uint8_t *sql, int sql_len, void **out_result);
+void *ddb_query(void *conn, const uint8_t *sql, int sql_len, int *out_err);
 
 void ddb_result_free(void *result);
 int64_t ddb_result_rows(void *result);
@@ -212,10 +221,10 @@ const uint8_t *ddb_value_bytes(void *result, int64_t row, int64_t col, int *out_
 
 /* ── prepared statements ────────────────────────────────────────────────────*/
 
-int ddb_prepare(void *conn, const uint8_t *sql, int sql_len, void **out_stmt);
+void *ddb_prepare(void *conn, const uint8_t *sql, int sql_len, int *out_err);
 void ddb_stmt_free(void *stmt);
 int64_t ddb_stmt_param_count(void *stmt);
-int ddb_stmt_execute(void *stmt, void **out_result);
+void *ddb_stmt_execute(void *stmt, int *out_err);
 int ddb_stmt_clear(void *stmt);
 
 /* Parameters are one-based, as DuckDB numbers them. */
@@ -237,8 +246,8 @@ int ddb_bind_bytes(void *stmt, int64_t i, const uint8_t *p, int len, int is_blob
  * The only fast way in: a row-at-a-time `INSERT` costs about two milliseconds in
  * DuckDB (spike), a hundred thousand appended rows cost about ten. */
 
-int ddb_appender_create(void *conn, const uint8_t *schema, int schema_len,
-                        const uint8_t *table, int table_len, void **out_app);
+void *ddb_appender_create(void *conn, const uint8_t *schema, int schema_len,
+                          const uint8_t *table, int table_len, int *out_err);
 int ddb_append_null(void *app);
 int ddb_append_bool(void *app, int v);
 int ddb_append_i64(void *app, int64_t v);

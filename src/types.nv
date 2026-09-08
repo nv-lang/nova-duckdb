@@ -110,6 +110,39 @@ export fn LogicalType @to_str() -> str {
     }
 }
 
+// -- strings across the boundary ---------------------------------------------
+
+/// Copy `len` bytes at `p` into an owned Nova string.
+///
+/// A COPY, NOT A VIEW, and that is the whole point. Every text DuckDB hands back
+/// -- an error message, a `VARCHAR` value, a column name -- points into memory the
+/// result or the handle owns, and it dies on the next call against that handle. A
+/// zero-copy view would be a string that silently becomes something else; the
+/// header of `duckdb_shim.h` promises the caller copies immediately, and this is
+/// where that promise is kept.
+///
+/// `to_str_unchecked` rather than a validating conversion: DuckDB stores `VARCHAR`
+/// as UTF-8 and validates on the way IN, so the bytes coming out have already been
+/// checked by the engine. A second validation on every value read would be paid
+/// per row for a guarantee already held.
+export fn str_of_raw(p *u8, len int) -> str {
+    if len <= 0 { return "" }
+    ro view = unsafe { Vec[u8].new(p, len) }
+    mut owned = []u8.new(cap: len)
+    for b in view { owned.push(b) }
+    unsafe { owned.to_str_unchecked() }
+}
+
+/// The same, as bytes rather than text -- for `BLOB`, where the content is not
+/// promised to be UTF-8 at all.
+export fn bytes_of_raw(p *u8, len int) -> []u8 {
+    mut owned = []u8.new(cap: if len > 0 { len } else { 1 })
+    if len <= 0 { return owned }
+    ro view = unsafe { Vec[u8].new(p, len) }
+    for b in view { owned.push(b) }
+    owned
+}
+
 // ── decimal ──────────────────────────────────────────────────────────────────
 
 /// An exact decimal: `unscaled` divided by ten to the `scale`.

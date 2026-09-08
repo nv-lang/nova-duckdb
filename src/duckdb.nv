@@ -1,0 +1,361 @@
+// duckdb.nv — the whole public surface of this package.
+//
+// Source: subplan 01.4 §4 of claude-limits.
+//
+// THIS IS NOT A COMPLETE BINDING OF DUCKDB, and the README says so in the same
+// words. Version 0.1 gives Nova a finished core plus what the first consumer needs;
+// anything else is added minor version by minor version when a consumer appears —
+// without rebuilding the library, because the static archive already contains
+// everything (§4.1). A request to widen it is an issue naming the consumer and the
+// function, not a "while we are here".
+//
+// ── Handles are `consume`, and that is the safety story ─────────────────────
+//
+// `Database`, `Connection`, `Result`, `Statement` and `Appender` are `consume`
+// types. Closing one takes it by value, so using it afterwards is a COMPILE error
+// rather than a use-after-free — the class of bug that a C database binding
+// otherwise hands to every caller. Nothing here hands out a raw handle: `ffi.nv` is
+// module-private and its types never appear in an exported signature.
+//
+// ── Failure ─────────────────────────────────────────────────────────────────
+//
+// Every fallible call carries `Fail[DuckError]` and throws. The message comes from
+// DuckDB itself, copied out immediately — the pointer it hands back dies on the
+// next call against the same handle.
+
+module duckdb
+
+// ── Why every `ffi` call below sits in `unsafe { }` ─────────────────────────
+//
+// An extern that takes a pointer is `#unsafe fn`, and the obligation has to be
+// discharged somewhere rather than propagated. Here is that somewhere: this file
+// knows the pointers came from the shim, that they outlive the call, and that the
+// lengths beside them are the lengths the shim measured. That knowledge is exactly
+// what the wrap asserts, and discharging it here is what lets every EXPORTED
+// signature in this package be safe -- a consumer of `nova-duckdb` never writes
+// `unsafe` and never holds a raw handle.
+//
+// Only the calls that actually take or return a RAW pointer are wrapped. A call
+// whose arguments are handles and integers is not `#unsafe fn`, and wrapping it is
+// its own error (`E_UNSAFE_UNUSED`) -- the checker refuses a wrap that guards
+// nothing, which is a good rule: a decorative `unsafe` teaches a reader to stop
+// noticing them.
+//
+// Only the calls that actually take or return a RAW pointer are wrapped. A call
+// whose arguments are handles and integers is not `#unsafe fn`, and wrapping it is
+// its own error (`E_UNSAFE_UNUSED`) -- the checker refuses a wrap that guards
+// nothing, which is a good rule: a decorative `unsafe` teaches a reader to stop
+// noticing them.
+//
+
+import duckdb.ffi
+import duckdb.types.{LogicalType, Value, DecimalValue, logical_type_of, str_of_raw, bytes_of_raw, timestamp_of_micros, date_of_epoch_days, time_of_micros}
+
+/// What went wrong. One variant per shim error code, so a caller can match
+/// exhaustively and a new code cannot arrive unnoticed.
+export type DuckError enum
+    | Open(str)
+    | Query(str)
+    | Prepare(str)
+    | Bind(str)
+    | Append(str)
+    /// A column of a type 0.1 does not read (§4.1), or a value that cannot cross
+    /// faithfully — a sub-microsecond instant, an interval carrying months.
+    | Type(str)
+    | Closed
+
+export fn DuckError @message() -> str {
+    match @ {
+        DuckError.Open(m) => m
+        DuckError.Query(m) => m
+        DuckError.Prepare(m) => m
+        DuckError.Bind(m) => m
+        DuckError.Append(m) => m
+        DuckError.Type(m) => m
+        DuckError.Closed => "handle already closed"
+    }
+}
+
+/// How to open a database.
+///
+/// The defaults are the ones 01.2 §3.1 asks a consumer to use, so a caller that
+/// does not care gets the right thing: two threads and half a gigabyte, which is
+/// what a desktop application polling an endpoint every five minutes needs.
+export type OpenOptions value {
+    read_only bool
+    /// DuckDB's own spelling, e.g. "512MB".
+    memory_limit str
+    threads int
+    /// Where DuckDB spills. Empty means beside the database file. It is NEVER
+    /// `~/.duckdb` — the shim always sets this, so a stray directory cannot appear
+    /// in a person's home (01.2 §0а).
+    temp_dir str
+    /// 32 bytes for AES-256-GCM, or empty for an unencrypted file. The key is not
+    /// stored anywhere by this package.
+    encryption_key str
+}
+
+export fn OpenOptions.defaults() -> OpenOptions =>
+    { read_only: false, memory_limit: "512MB", threads: 2, temp_dir: "", encryption_key: "" }
+
+// ── handles ──────────────────────────────────────────────────────────────────
+
+export type Database consume { ro h ffi.CDbHandle }
+export type Connection consume { ro h ffi.CConnHandle }
+export type QueryResult consume { ro h ffi.CResultHandle }
+
+// ── errors from DuckDB ───────────────────────────────────────────────────────
+
+fn message_of(handle *(), kind int) -> str {
+    mut len = 0
+    ro p = unsafe { ffi.ddb_last_error(handle, kind, &len) }
+    ro m = str_of_raw(p, len)
+    if m == "" { "duckdb reported no message" } else { m }
+}
+
+/// Turn a shim code plus a handle into the error to throw.
+///
+/// The code decides the VARIANT and the handle supplies the TEXT. Keeping them
+/// apart is what lets a caller switch on the kind of failure while still showing a
+/// person what the engine actually said.
+fn error_of(code int, handle *(), kind int) -> DuckError {
+    ro m = message_of(handle, kind)
+    if code == ffi.DDB_E_OPEN { return DuckError.Open(m) }
+    if code == ffi.DDB_E_QUERY { return DuckError.Query(m) }
+    if code == ffi.DDB_E_PREPARE { return DuckError.Prepare(m) }
+    if code == ffi.DDB_E_BIND { return DuckError.Bind(m) }
+    if code == ffi.DDB_E_APPEND { return DuckError.Append(m) }
+    if code == ffi.DDB_E_TYPE { return DuckError.Type(m) }
+    if code == ffi.DDB_E_CLOSED { return DuckError.Closed }
+    DuckError.Query(m)
+}
+
+// ── database ─────────────────────────────────────────────────────────────────
+
+/// Open a database file, or `":memory:"`.
+export fn Database.open(path str, opts OpenOptions) Fail[DuckError] -> Database {
+    ro pb = path.bytes()
+    ro tb = opts.temp_dir.bytes()
+    ro mb = opts.memory_limit.bytes()
+    ro kb = opts.encryption_key.bytes()
+    mut err = 0
+    ro ro_flag = if opts.read_only { 1 } else { 0 }
+    ro h = unsafe { ffi.ddb_open(pb.ptr(), pb.len(), tb.ptr(), tb.len(), mb.ptr(), mb.len(), opts.threads, ro_flag, kb.ptr(), kb.len(), &err) }
+    if err != ffi.DDB_OK { throw DuckError.Open(message_of(h as *(), ffi.KIND_DB)) }
+    { h }
+}
+
+/// An in-memory database. Everything the tests use, and nothing on disk.
+export fn Database.open_memory(opts OpenOptions) Fail[DuckError] -> Database =>
+    Database.open(":memory:", opts)
+
+export fn Database @connect() Fail[DuckError] -> Connection {
+    mut err = 0
+    ro c = unsafe { ffi.ddb_connect(@h, &err) }
+    if err != ffi.DDB_OK { throw error_of(err, @h as *(), ffi.KIND_DB) }
+    { h: c }
+}
+
+export fn Database consume @close() -> () {
+    ffi.ddb_close(@h)
+}
+
+/// The DuckDB version this package was built against, e.g. `"v1.5.5"`.
+export fn Database.version() -> str {
+    ro p = unsafe { ffi.ddb_version() }
+    // The shim hands back a NUL-terminated literal from static storage; the length
+    // is found by scanning, once, at a call site nobody puts in a loop.
+    mut n = 0
+    while n < 64 {
+        if unsafe { p.offset(n).read() } == 0 { break }
+        n += 1
+    }
+    str_of_raw(p, n)
+}
+
+/// The extensions compiled in. Statically linked, never loaded at runtime — a
+/// binary that reaches the network for an extension is the failure 01.2 §0а
+/// measured at twenty-two seconds.
+export fn Database.extensions() -> []str => ["core_functions", "icu"]
+
+// ── connection ───────────────────────────────────────────────────────────────
+
+/// Run a statement and report rows changed.
+export fn Connection @exec(sql str) Fail[DuckError] -> int {
+    ro b = sql.bytes()
+    mut changed i64 = 0
+    ro rc = unsafe { ffi.ddb_exec(@h, b.ptr(), b.len(), &changed) }
+    if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_CONN) }
+    changed as int
+}
+
+/// Run a query and materialise the result.
+export fn Connection @query(sql str) Fail[DuckError] -> QueryResult {
+    ro b = sql.bytes()
+    mut err = 0
+    ro r = unsafe { ffi.ddb_query(@h, b.ptr(), b.len(), &err) }
+    if err != ffi.DDB_OK { throw error_of(err, @h as *(), ffi.KIND_CONN) }
+    { h: r }
+}
+
+export fn Connection @begin() Fail[DuckError] -> () {
+    ro _ = @exec("BEGIN TRANSACTION")
+}
+
+export fn Connection @commit() Fail[DuckError] -> () {
+    ro _ = @exec("COMMIT")
+}
+
+export fn Connection @rollback() Fail[DuckError] -> () {
+    ro _ = @exec("ROLLBACK")
+}
+
+export fn Connection consume @close() -> () {
+    ffi.ddb_disconnect(@h)
+}
+
+// ── result ───────────────────────────────────────────────────────────────────
+
+/// One column of a result.
+export type Column value { name str, kind LogicalType }
+
+export fn QueryResult @rows() -> int => ffi.ddb_result_rows(@h) as int
+export fn QueryResult @cols() -> int => ffi.ddb_result_cols(@h) as int
+
+export fn QueryResult @column(i int) -> Column {
+    mut len = 0
+    ro p = unsafe { ffi.ddb_result_col_name(@h, i as i64, &len) }
+    { name: str_of_raw(p, len), kind: logical_type_of(ffi.ddb_result_col_type(@h, i as i64)) }
+}
+
+export fn QueryResult @columns() -> []Column {
+    mut out = []Column.new()
+    mut i = 0
+    while i < @cols() {
+        out.push(@column(i))
+        i += 1
+    }
+    out
+}
+
+export fn QueryResult @is_null(row int, col int) -> bool =>
+    ffi.ddb_value_is_null(@h, row as i64, col as i64) != 0
+
+/// One value, in whatever shape its column has.
+///
+/// The column's type decides the shape, not the caller: asking for an `i64` from a
+/// `VARCHAR` column is a mistake this design cannot express. A caller that knows
+/// its schema matches on the result; one that does not can look at `@column(i)`
+/// first.
+export fn QueryResult @value(row int, col int) Fail[DuckError] -> Value {
+    if @is_null(row, col) { return Value.Null }
+    ro r = row as i64
+    ro c = col as i64
+    match @column(col).kind {
+        LogicalType.Boolean => {
+            mut v = 0
+            ro rc = unsafe { ffi.ddb_value_bool(@h, r, c, &v) }
+            if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_RESULT) }
+            Value.Bool(v != 0)
+        }
+        LogicalType.TinyInt => Value.Int(@read_i64(r, c))
+        LogicalType.SmallInt => Value.Int(@read_i64(r, c))
+        LogicalType.Integer => Value.Int(@read_i64(r, c))
+        LogicalType.BigInt => Value.Int(@read_i64(r, c))
+        LogicalType.UTinyInt => Value.UInt(@read_u64(r, c))
+        LogicalType.USmallInt => Value.UInt(@read_u64(r, c))
+        LogicalType.UInteger => Value.UInt(@read_u64(r, c))
+        LogicalType.UBigInt => Value.UInt(@read_u64(r, c))
+        LogicalType.HugeInt => {
+            mut hi i64 = 0
+            mut lo u64 = 0
+            ro rc = unsafe { ffi.ddb_value_hugeint(@h, r, c, &hi, &lo) }
+            if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_RESULT) }
+            Value.Huge(hi, lo)
+        }
+        LogicalType.Float => Value.Real(@read_f64(r, c))
+        LogicalType.Double => Value.Real(@read_f64(r, c))
+        LogicalType.Decimal => {
+            mut hi i64 = 0
+            mut lo u64 = 0
+            mut scale = 0
+            ro rc = unsafe { ffi.ddb_value_decimal(@h, r, c, &hi, &lo, &scale) }
+            if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_RESULT) }
+            Value.Dec(DecimalValue.of(hi, lo, scale))
+        }
+        LogicalType.Varchar => Value.Text(@read_text(r, c))
+        LogicalType.Enum => Value.Text(@read_text(r, c))
+        LogicalType.Blob => {
+            mut len = 0
+            ro p = unsafe { ffi.ddb_value_bytes(@h, r, c, &len) }
+            Value.Bytes(bytes_of_raw(p, len))
+        }
+        LogicalType.Timestamp => Value.Instant(timestamp_of_micros(@read_micros(r, c)))
+        LogicalType.TimestampTz => Value.Instant(timestamp_of_micros(@read_micros(r, c)))
+        LogicalType.Date => {
+            mut d i32 = 0
+            ro rc = unsafe { ffi.ddb_value_date(@h, r, c, &d) }
+            if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_RESULT) }
+            Value.Day(date_of_epoch_days(d))
+        }
+        LogicalType.Time => {
+            mut us i64 = 0
+            ro rc = unsafe { ffi.ddb_value_time(@h, r, c, &us) }
+            if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_RESULT) }
+            Value.TimeOfDay(time_of_micros(us))
+        }
+        LogicalType.Interval => {
+            mut months i32 = 0
+            mut days i32 = 0
+            mut us i64 = 0
+            ro rc = unsafe { ffi.ddb_value_interval(@h, r, c, &months, &days, &us) }
+            if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_RESULT) }
+            // Months are refused rather than approximated: a month is not a fixed
+            // number of days, so folding one into a `Duration` moves a date by up
+            // to three days depending on when it is applied.
+            if months != 0 { throw DuckError.Type("column ${col} is an INTERVAL carrying months, which Duration cannot hold") }
+            Value.Span(time_of_micros(us + (days as i64) * 86_400_000_000))
+        }
+        LogicalType.Uuid => throw DuckError.Type("column ${col}: UUID reading arrives with stage S1")
+        LogicalType.SqlNull => Value.Null
+        LogicalType.Unsupported => throw DuckError.Type("column ${col} has a type this binding does not read (LIST, STRUCT, MAP, ARRAY, UNION or BIT); see the package README")
+    }
+}
+
+fn QueryResult @read_i64(r i64, c i64) Fail[DuckError] -> i64 {
+    mut v i64 = 0
+    ro rc = unsafe { ffi.ddb_value_i64(@h, r, c, &v) }
+    if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_RESULT) }
+    v
+}
+
+fn QueryResult @read_u64(r i64, c i64) Fail[DuckError] -> u64 {
+    mut v u64 = 0
+    ro rc = unsafe { ffi.ddb_value_u64(@h, r, c, &v) }
+    if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_RESULT) }
+    v
+}
+
+fn QueryResult @read_f64(r i64, c i64) Fail[DuckError] -> f64 {
+    mut v = 0.0
+    ro rc = unsafe { ffi.ddb_value_f64(@h, r, c, &v) }
+    if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_RESULT) }
+    v
+}
+
+fn QueryResult @read_micros(r i64, c i64) Fail[DuckError] -> i64 {
+    mut v i64 = 0
+    ro rc = unsafe { ffi.ddb_value_timestamp(@h, r, c, &v) }
+    if rc != ffi.DDB_OK { throw error_of(rc, @h as *(), ffi.KIND_RESULT) }
+    v
+}
+
+fn QueryResult @read_text(r i64, c i64) -> str {
+    mut len = 0
+    ro p = unsafe { ffi.ddb_value_bytes(@h, r, c, &len) }
+    str_of_raw(p, len)
+}
+
+export fn QueryResult consume @close() -> () {
+    ffi.ddb_result_free(@h)
+}
