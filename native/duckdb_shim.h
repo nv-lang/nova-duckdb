@@ -216,8 +216,12 @@ int ddb_value_interval(void *result, int64_t row, int64_t col,
                        int32_t *out_months, int32_t *out_days, int64_t *out_us);
 /* UUID as sixteen bytes, most significant first. `out` must have room for 16. */
 int ddb_value_uuid(void *result, int64_t row, int64_t col, uint8_t *out16);
-/* Text and blobs: the pointer is owned by the result and dies with it. */
+/* Text. The pointer is owned by the result and is valid until the NEXT call on
+ * that result -- copy it at once. */
 const uint8_t *ddb_value_bytes(void *result, int64_t row, int64_t col, int *out_len);
+/* Bytes. Separate from the above because the text accessor CONVERTS a value to a
+ * rendering; a BLOB read through it comes back mangled. */
+const uint8_t *ddb_value_blob(void *result, int64_t row, int64_t col, int *out_len);
 
 /* ── prepared statements ────────────────────────────────────────────────────*/
 

@@ -92,6 +92,7 @@ extern "C" fn ddb_value_time(result CResultHandle, row i64, col i64, out_us *mut
 extern "C" fn ddb_value_interval(result CResultHandle, row i64, col i64, out_months *mut i32, out_days *mut i32, out_us *mut i64) -> int
 extern "C" fn ddb_value_uuid(result CResultHandle, row i64, col i64, out16 *mut u8) -> int
 extern "C" fn ddb_value_bytes(result CResultHandle, row i64, col i64, out_len *mut int) -> *u8
+extern "C" fn ddb_value_blob(result CResultHandle, row i64, col i64, out_len *mut int) -> *u8
 
 // ── prepared statements ──────────────────────────────────────────────────────
 

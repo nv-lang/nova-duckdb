@@ -287,7 +287,9 @@ export fn QueryResult @value(row int, col int) Fail[DuckError] -> Value {
         LogicalType.Enum => Value.Text(@read_text(r, c))
         LogicalType.Blob => {
             mut len = 0
-            ro p = unsafe { ffi.ddb_value_bytes(@h, r, c, &len) }
+            // The BLOB accessor, not the text one: the text accessor converts a
+            // value to a rendering, which for bytes is not the bytes.
+            ro p = unsafe { ffi.ddb_value_blob(@h, r, c, &len) }
             Value.Bytes(bytes_of_raw(p, len))
         }
         LogicalType.Timestamp => Value.Instant(timestamp_of_micros(@read_micros(r, c)))
