@@ -1,0 +1,15 @@
+﻿core_functions_extension
+icu_extension
+duckdb_static
+duckdb_re2
+duckdb_fmt
+duckdb_utf8proc
+duckdb_hyperloglog
+duckdb_fastpforlib
+duckdb_skiplistlib
+duckdb_mbedtls
+duckdb_yyjson
+duckdb_fsst
+duckdb_zstd
+duckdb_miniz
+duckdb_pg_query

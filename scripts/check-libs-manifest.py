@@ -50,7 +50,14 @@ def main():
         print("  success when it compared nothing is the defect it exists to catch.")
         return 1
 
-    built = [l.strip() for l in MANIFEST.read_text(encoding="utf-8").splitlines() if l.strip()]
+    # `utf-8-sig` and an explicit strip of the mark: PowerShell 5.1 writes UTF-8 WITH
+    # a byte-order mark, and on the first real build that made this checker report
+    # `core_functions_extension` as BOTH missing and extra -- the signature of two
+    # strings that look identical and are not. A reader acting on that would have
+    # edited the manifest in precisely the wrong direction. A checker defeated by an
+    # invisible character does not report "unknown"; it reports something false.
+    text = MANIFEST.read_text(encoding="utf-8-sig")
+    built = [l.strip().lstrip("\ufeff") for l in text.splitlines() if l.strip()]
 
     print(f"declared in nova.toml: {len(declared)}, built per the manifest: {len(built)}")
 

@@ -74,11 +74,15 @@ $manifest = Join-Path $PSScriptRoot "libs-manifest.txt"
 # what actually lands in the build tree -- this list is the EXPECTATION, and a
 # mismatch is reported rather than silently accepted, because a vendored dependency
 # appearing or vanishing between DuckDB versions is exactly the risk 01.4 §8 names.
+# `duckdb_pg_query` added 2026-09-08 after the first real build produced it: a
+# vendored dependency that exists in v1.5.5 and was not in this list. Exactly the risk
+# 01.4 §8 names, and the reason the produced set is compared with the expected one
+# rather than assumed.
 $expected = @(
   "core_functions_extension", "icu_extension", "duckdb_static",
   "duckdb_re2", "duckdb_fmt", "duckdb_utf8proc", "duckdb_hyperloglog",
   "duckdb_fastpforlib", "duckdb_skiplistlib", "duckdb_mbedtls", "duckdb_yyjson",
-  "duckdb_fsst", "duckdb_zstd", "duckdb_miniz"
+  "duckdb_fsst", "duckdb_zstd", "duckdb_miniz", "duckdb_pg_query"
 )
 
 function Need($name, $path) {
@@ -158,7 +162,18 @@ cmd /c "call `"$VcVars`" >nul 2>&1 && cmake $cmakeArgs"
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed with $LASTEXITCODE" }
 
 "build (expect 40-60 min on 16 cores with a cold cache)..."
-cmd /c "call `"$VcVars`" >nul 2>&1 && cmake --build `"$build`" --target duckdb_static -j"
+# THREE targets, not one. The first real run asked for `duckdb_static` alone and the
+# manifest check reported core_functions_extension and icu_extension MISSING: they are
+# separate cmake targets and not dependencies of the static library, so nothing built
+# them. Their directories were there under native/build/extension/ with CMakeFiles and
+# no .lib -- the shape of a target nobody asked for.
+#
+# It matters because the header of this script exists to explain that the amalgamation
+# was abandoned FOR those two extensions: date_trunc, time_bucket and TIMESTAMPTZ
+# arithmetic live in them, and the schema of subplan 01.2 is built on those functions.
+# Building only duckdb_static reproduced the very gap the repository build was chosen
+# to close.
+cmd /c "call `"$VcVars`" >nul 2>&1 && cmake --build `"$build`" --target duckdb_static core_functions_extension icu_extension -j"
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed with $LASTEXITCODE" }
 "built in $([int]$sw.Elapsed.TotalMinutes) min"
 
@@ -183,7 +198,10 @@ if ($missing -or $extra) {
 $ordered = @()
 $ordered += $expected | Where-Object { $found -contains $_ }
 $ordered += $extra
-Set-Content -Path $manifest -Value $ordered -Encoding utf8
+# WITHOUT a byte-order mark. `-Encoding utf8` on Windows PowerShell 5.1 means WITH
+# one, and the mark rode into the first name in the file -- enough to make a literal
+# comparison in check-libs-manifest.py report a library as both missing and extra.
+[System.IO.File]::WriteAllLines($manifest, $ordered, (New-Object System.Text.UTF8Encoding($false)))
 
 Set-Content -Path $stamp -Value $key -Encoding utf8
 "manifest: $manifest ($($ordered.Count) libraries)"
