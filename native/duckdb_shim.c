@@ -492,3 +492,269 @@ const uint8_t *ddb_value_blob(void *result, int64_t row, int64_t col, int *out_l
     *out_len = (int)b.size;
     return (const uint8_t *)b.data;
 }
+
+/* ── prepared statements ─────────────────────────────────────────────────────
+ *
+ * Every one of these was declared in the header and bound from Nova before a single
+ * line of it existed here (found 2026-09-08, the first evening the link got far
+ * enough to ask). The statement box carries its own error slot, like every other
+ * handle, so a bind failure has somewhere to say why. */
+
+void *ddb_prepare(void *conn, const uint8_t *sql, int sql_len, int *out_err) {
+    *out_err = DDBC_OK;
+    DdbConnection *c = (DdbConnection *)conn;
+    if (!c) { *out_err = DDBC_E_CLOSED; return NULL; }
+    char *s = dup_str(sql, sql_len);
+    if (!s) { *out_err = DDBC_E_PREPARE; return NULL; }
+    DdbStatement *st = (DdbStatement *)calloc(1, sizeof(DdbStatement));
+    if (!st) { free(s); *out_err = DDBC_E_PREPARE; return NULL; }
+    int rc = duckdb_prepare(c->con, s, &st->stmt);                  /* [BY-NAME] */
+    free(s);
+    if (rc != DuckDBSuccess) {
+        /* The message lives on the STATEMENT even on failure, and it is the only
+         * place it lives: copy it out before destroying the handle. */
+        set_err(&c->err, duckdb_prepare_error(st->stmt));           /* [BY-NAME] */
+        duckdb_destroy_prepare(&st->stmt);                          /* [BY-NAME] */
+        free(st);
+        *out_err = DDBC_E_PREPARE;
+        return NULL;
+    }
+    return st;
+}
+
+void ddb_stmt_free(void *stmt) {
+    DdbStatement *st = (DdbStatement *)stmt;
+    if (!st) return;
+    duckdb_destroy_prepare(&st->stmt);                              /* [BY-NAME] */
+    if (st->err) free(st->err);
+    free(st);
+}
+
+int64_t ddb_stmt_param_count(void *stmt) {
+    DdbStatement *st = (DdbStatement *)stmt;
+    if (!st) return 0;
+    return (int64_t)duckdb_nparams(st->stmt);                       /* [BY-NAME] */
+}
+
+void *ddb_stmt_execute(void *stmt, int *out_err) {
+    *out_err = DDBC_OK;
+    DdbStatement *st = (DdbStatement *)stmt;
+    if (!st) { *out_err = DDBC_E_CLOSED; return NULL; }
+    DdbResult *out = (DdbResult *)calloc(1, sizeof(DdbResult));
+    if (!out) { *out_err = DDBC_E_QUERY; return NULL; }
+    if (duckdb_execute_prepared(st->stmt, &out->res) != DuckDBSuccess) { /* [BY-NAME] */
+        set_err(&st->err, duckdb_result_error(&out->res));          /* [SPIKE] */
+        duckdb_destroy_result(&out->res);
+        free(out);
+        *out_err = DDBC_E_QUERY;
+        return NULL;
+    }
+    out->valid = 1;
+    return out;
+}
+
+int ddb_stmt_clear(void *stmt) {
+    DdbStatement *st = (DdbStatement *)stmt;
+    if (!st) return DDBC_E_CLOSED;
+    return duckdb_clear_bindings(st->stmt) == DuckDBSuccess         /* [BY-NAME] */
+        ? DDBC_OK : DDBC_E_BIND;
+}
+
+/* Positions are 1-based on BOTH sides -- Nova's `?1` numbering and DuckDB's C API --
+ * so the index crosses unchanged. Stated once here rather than in twelve places. */
+#define DDB_BIND(call) do { \
+    DdbStatement *st = (DdbStatement *)stmt; \
+    if (!st) return DDBC_E_CLOSED; \
+    return (call) == DuckDBSuccess ? DDBC_OK : DDBC_E_BIND; \
+} while (0)
+
+int ddb_bind_null(void *stmt, int64_t i) {
+    DDB_BIND(duckdb_bind_null(st->stmt, (idx_t)i));                 /* [BY-NAME] */
+}
+int ddb_bind_bool(void *stmt, int64_t i, int v) {
+    DDB_BIND(duckdb_bind_boolean(st->stmt, (idx_t)i, v != 0));      /* [BY-NAME] */
+}
+int ddb_bind_i64(void *stmt, int64_t i, int64_t v) {
+    DDB_BIND(duckdb_bind_int64(st->stmt, (idx_t)i, v));             /* [BY-NAME] */
+}
+int ddb_bind_u64(void *stmt, int64_t i, uint64_t v) {
+    DDB_BIND(duckdb_bind_uint64(st->stmt, (idx_t)i, v));            /* [BY-NAME] */
+}
+int ddb_bind_f64(void *stmt, int64_t i, double v) {
+    DDB_BIND(duckdb_bind_double(st->stmt, (idx_t)i, v));            /* [BY-NAME] */
+}
+int ddb_bind_hugeint(void *stmt, int64_t i, int64_t hi, uint64_t lo) {
+    duckdb_hugeint h; h.upper = hi; h.lower = lo;                   /* [SPIKE] */
+    DDB_BIND(duckdb_bind_hugeint(st->stmt, (idx_t)i, h));           /* [BY-NAME] */
+}
+int ddb_bind_decimal(void *stmt, int64_t i, int64_t hi, uint64_t lo, int scale) {
+    /* `width` is not a parameter of the Nova side on purpose: the column already
+     * has one, and a value cannot widen it. 38 is DECIMAL's maximum, so it never
+     * narrows what the column allows either. */
+    duckdb_decimal d;
+    d.width = 38;
+    d.scale = (uint8_t)scale;
+    d.value.upper = hi;
+    d.value.lower = lo;                                             /* [SPIKE] */
+    DDB_BIND(duckdb_bind_decimal(st->stmt, (idx_t)i, d));           /* [BY-NAME] */
+}
+int ddb_bind_timestamp(void *stmt, int64_t i, int64_t us) {
+    duckdb_timestamp t; t.micros = us;                              /* [SPIKE] */
+    DDB_BIND(duckdb_bind_timestamp(st->stmt, (idx_t)i, t));         /* [BY-NAME] */
+}
+int ddb_bind_date(void *stmt, int64_t i, int32_t days) {
+    duckdb_date d; d.days = days;                                   /* [SPIKE] */
+    DDB_BIND(duckdb_bind_date(st->stmt, (idx_t)i, d));              /* [BY-NAME] */
+}
+int ddb_bind_time(void *stmt, int64_t i, int64_t us) {
+    duckdb_time t; t.micros = us;                                   /* [SPIKE] */
+    DDB_BIND(duckdb_bind_time(st->stmt, (idx_t)i, t));              /* [BY-NAME] */
+}
+int ddb_bind_uuid(void *stmt, int64_t i, const uint8_t *b16) {
+    /* A UUID crosses as sixteen bytes, big-endian as the text form reads, and DuckDB
+     * stores it as a hugeint whose HIGH bit is flipped -- that flip is how it orders
+     * UUIDs the way a person expects. Both halves are assembled here so no caller
+     * has to know either fact. */
+    if (!b16) return DDBC_E_TYPE;
+    uint64_t hi = 0, lo = 0;
+    for (int k = 0; k < 8; k++)  hi = (hi << 8) | b16[k];
+    for (int k = 8; k < 16; k++) lo = (lo << 8) | b16[k];
+    duckdb_hugeint h;
+    h.upper = (int64_t)(hi ^ 0x8000000000000000ULL);
+    h.lower = lo;
+    DDB_BIND(duckdb_bind_hugeint(st->stmt, (idx_t)i, h));           /* [BY-NAME] */
+}
+int ddb_bind_bytes(void *stmt, int64_t i, const uint8_t *p, int len, int is_blob) {
+    DdbStatement *st = (DdbStatement *)stmt;
+    if (!st) return DDBC_E_CLOSED;
+    if (len < 0) len = 0;
+    if (is_blob) {
+        /* A BLOB takes pointer+length and needs no terminator. */
+        return duckdb_bind_blob(st->stmt, (idx_t)i, p, (idx_t)len)  /* [BY-NAME] */
+            == DuckDBSuccess ? DDBC_OK : DDBC_E_BIND;
+    }
+    /* VARCHAR: `duckdb_bind_varchar_length` also takes a length, so no copy and no
+     * terminator is needed -- unlike the SQL entry points above, which do. */
+    return duckdb_bind_varchar_length(st->stmt, (idx_t)i,           /* [BY-NAME] */
+                                      (const char *)p, (idx_t)len)
+        == DuckDBSuccess ? DDBC_OK : DDBC_E_BIND;
+}
+
+#undef DDB_BIND
+
+/* ── appender ────────────────────────────────────────────────────────────────
+ *
+ * The appender has no positions: it advances a cursor, one value per call, and
+ * `ddb_append_end_row` closes the row. That is why none of these takes an index. */
+
+void *ddb_appender_create(void *conn, const uint8_t *schema, int schema_len,
+                          const uint8_t *table, int table_len, int *out_err) {
+    *out_err = DDBC_OK;
+    DdbConnection *c = (DdbConnection *)conn;
+    if (!c) { *out_err = DDBC_E_CLOSED; return NULL; }
+    /* An empty schema means "the default one", and DuckDB spells that NULL rather
+     * than "": passing the empty string looks for a schema of that name. */
+    char *sch = schema_len > 0 ? dup_str(schema, schema_len) : NULL;
+    char *tab = dup_str(table, table_len);
+    if (!tab) { if (sch) free(sch); *out_err = DDBC_E_APPEND; return NULL; }
+    DdbAppender *a = (DdbAppender *)calloc(1, sizeof(DdbAppender));
+    if (!a) { if (sch) free(sch); free(tab); *out_err = DDBC_E_APPEND; return NULL; }
+    int rc = duckdb_appender_create(c->con, sch, tab, &a->app);     /* [SPIKE] */
+    if (sch) free(sch);
+    free(tab);
+    if (rc != DuckDBSuccess) {
+        set_err(&c->err, duckdb_appender_error(a->app));            /* [BY-NAME] */
+        duckdb_appender_destroy(&a->app);                           /* [BY-NAME] */
+        free(a);
+        *out_err = DDBC_E_APPEND;
+        return NULL;
+    }
+    return a;
+}
+
+#define DDB_APPEND(call) do { \
+    DdbAppender *a = (DdbAppender *)app; \
+    if (!a) return DDBC_E_CLOSED; \
+    if ((call) == DuckDBSuccess) return DDBC_OK; \
+    set_err(&a->err, duckdb_appender_error(a->app)); \
+    return DDBC_E_APPEND; \
+} while (0)
+
+int ddb_append_null(void *app) {
+    DDB_APPEND(duckdb_append_null(a->app));                         /* [BY-NAME] */
+}
+int ddb_append_bool(void *app, int v) {
+    DDB_APPEND(duckdb_append_bool(a->app, v != 0));                 /* [BY-NAME] */
+}
+int ddb_append_i64(void *app, int64_t v) {
+    DDB_APPEND(duckdb_append_int64(a->app, v));                     /* [SPIKE] */
+}
+int ddb_append_u64(void *app, uint64_t v) {
+    DDB_APPEND(duckdb_append_uint64(a->app, v));                    /* [BY-NAME] */
+}
+int ddb_append_f64(void *app, double v) {
+    DDB_APPEND(duckdb_append_double(a->app, v));                    /* [BY-NAME] */
+}
+int ddb_append_hugeint(void *app, int64_t hi, uint64_t lo) {
+    duckdb_hugeint h; h.upper = hi; h.lower = lo;                   /* [SPIKE] */
+    DDB_APPEND(duckdb_append_hugeint(a->app, h));                   /* [BY-NAME] */
+}
+int ddb_append_timestamp(void *app, int64_t us) {
+    duckdb_timestamp t; t.micros = us;                              /* [SPIKE] */
+    DDB_APPEND(duckdb_append_timestamp(a->app, t));                 /* [BY-NAME] */
+}
+int ddb_append_date(void *app, int32_t days) {
+    duckdb_date d; d.days = days;                                   /* [SPIKE] */
+    DDB_APPEND(duckdb_append_date(a->app, d));                      /* [BY-NAME] */
+}
+int ddb_append_time(void *app, int64_t us) {
+    duckdb_time t; t.micros = us;                                   /* [SPIKE] */
+    DDB_APPEND(duckdb_append_time(a->app, t));                      /* [BY-NAME] */
+}
+int ddb_append_uuid(void *app, const uint8_t *b16) {
+    /* Same assembly and the same high-bit flip as ddb_bind_uuid; the two must agree
+     * or a row written through the appender sorts differently from one written
+     * through a statement. */
+    if (!b16) return DDBC_E_TYPE;
+    uint64_t hi = 0, lo = 0;
+    for (int k = 0; k < 8; k++)  hi = (hi << 8) | b16[k];
+    for (int k = 8; k < 16; k++) lo = (lo << 8) | b16[k];
+    duckdb_hugeint h;
+    h.upper = (int64_t)(hi ^ 0x8000000000000000ULL);
+    h.lower = lo;
+    DDB_APPEND(duckdb_append_hugeint(a->app, h));                   /* [BY-NAME] */
+}
+int ddb_append_bytes(void *app, const uint8_t *p, int len, int is_blob) {
+    DdbAppender *a = (DdbAppender *)app;
+    if (!a) return DDBC_E_CLOSED;
+    if (len < 0) len = 0;
+    int rc = is_blob
+        ? duckdb_append_blob(a->app, p, (idx_t)len)                 /* [BY-NAME] */
+        : duckdb_append_varchar_length(a->app, (const char *)p, (idx_t)len);
+    if (rc == DuckDBSuccess) return DDBC_OK;
+    set_err(&a->err, duckdb_appender_error(a->app));                /* [BY-NAME] */
+    return DDBC_E_APPEND;
+}
+int ddb_append_end_row(void *app) {
+    DDB_APPEND(duckdb_appender_end_row(a->app));                    /* [SPIKE] */
+}
+int ddb_appender_flush(void *app) {
+    DDB_APPEND(duckdb_appender_flush(a->app));                      /* [BY-NAME] */
+}
+
+int ddb_appender_close(void *app) {
+    /* Close and destroy in one call: Nova's `Appender` is a consume type whose
+     * cleanup runs exactly once, so there is no state in which a closed appender is
+     * still reachable. Flushing here rather than in the caller means a dropped
+     * appender cannot lose rows silently. */
+    DdbAppender *a = (DdbAppender *)app;
+    if (!a) return DDBC_E_CLOSED;
+    int rc = duckdb_appender_close(a->app);                         /* [BY-NAME] */
+    int code = rc == DuckDBSuccess ? DDBC_OK : DDBC_E_APPEND;
+    duckdb_appender_destroy(&a->app);                               /* [BY-NAME] */
+    if (a->err) free(a->err);
+    free(a);
+    return code;
+}
+
+#undef DDB_APPEND

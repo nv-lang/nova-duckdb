@@ -83,7 +83,7 @@ $expected = @(
   "duckdb_re2", "duckdb_fmt", "duckdb_utf8proc", "duckdb_hyperloglog",
   "duckdb_fastpforlib", "duckdb_skiplistlib", "duckdb_mbedtls", "duckdb_yyjson",
   "duckdb_fsst", "duckdb_zstd", "duckdb_miniz", "duckdb_pg_query",
-  "duckdb_generated_extension_loader"
+  "duckdb_generated_extension_loader", "parquet_extension"
 )
 
 function Need($name, $path) {
@@ -174,7 +174,7 @@ if ($LASTEXITCODE -ne 0) { throw "cmake configure failed with $LASTEXITCODE" }
 # arithmetic live in them, and the schema of subplan 01.2 is built on those functions.
 # Building only duckdb_static reproduced the very gap the repository build was chosen
 # to close.
-cmd /c "call `"$VcVars`" >nul 2>&1 && cmake --build `"$build`" --target duckdb_static core_functions_extension icu_extension duckdb_generated_extension_loader -j"
+cmd /c "call `"$VcVars`" >nul 2>&1 && cmake --build `"$build`" --target duckdb_static core_functions_extension icu_extension parquet_extension duckdb_generated_extension_loader -j"
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed with $LASTEXITCODE" }
 "built in $([int]$sw.Elapsed.TotalMinutes) min"
 
