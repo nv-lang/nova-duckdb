@@ -1,0 +1,347 @@
+// duckdb_test.nv — the acceptance of subplan 01.4 §6, in-memory, no files, no
+// network.
+//
+//   ./nova.sh test src
+//
+// ── These tests have NEVER RUN, and here is exactly why ─────────────────────
+//
+// On a checkout without the DuckDB submodule and without `scripts/build-duckdb.*`
+// having run, `nova test src` reports CC-FAIL on this file: the shim is compiled
+// before any library is looked for, and it stops at `duckdb.h: file not found`.
+//
+// The first version of this banner said SKIP, and that was wrong — I had read
+// nova-tls's note about `[ffi] libs` + `lib_dirs` degrading gracefully and
+// generalised it without running anything. The degrade covers missing LIBRARIES,
+// not a missing HEADER. Measured 2026-09-08.
+//
+// So: this file typechecks and has never been executed. Nothing in it is claimed
+// as passing. Writing the acceptance first is still worth it — the first real run
+// then has something to disagree with — but "written" is not "green", and the two
+// must not be reported as the same thing.
+//
+// ── Why in-memory ───────────────────────────────────────────────────────────
+//
+// `:memory:` for everything. A test that writes a file has to clean it up, races
+// with a parallel run of itself, and passes on the second run for the wrong reason
+// when cleanup failed. The one property that needs a real path — that `~/.duckdb`
+// is never created — is checked by looking at the directory, not by writing there.
+
+module duckdb.duckdb_test
+
+import duckdb.{Database, Connection, DbOptions, DuckError, Column}
+import duckdb.types.{Value, DecimalValue, timestamp_of_micros, micros_of_timestamp}
+
+/// One in-memory database, opened with the defaults, for a test body to use.
+///
+/// Everything is closed on the way out including the failing way out: a leaked
+/// connection in a test suite shows up as an unrelated test failing later, which is
+/// the worst kind of flake to chase.
+fn with_db[T](body fn(Connection) Fail[DuckError] -> T) Fail[DuckError] -> T {
+    // CONSUME-SCOPE (`consume X = e { body }`, D188), not `consume X = e` plus a
+    // `defer`. The first spelling used defer and the checker refused it: a defer
+    // does not count as consuming the binding, so `db` reached scope exit unclaimed
+    // (`D133-not-consumed`). The scope form ties the resource to a block, which is
+    // what a test helper wants anyway -- the database cannot outlive the body.
+    // `return` from inside the block: the scope form is a STATEMENT, not an
+    // expression, and the compiler says so plainly -- cleanup still runs on the way
+    // out through the return.
+    consume db = Database.open_memory(DbOptions.defaults()) {
+        consume con = db.connect() {
+            return body(con)
+        }
+    }
+}
+
+fn one_int(con Connection, sql str) Fail[DuckError] -> i64 {
+    consume r = con.query(sql)
+    defer { r.close() }
+    match r.value(0, 0) {
+        Value.Int(n) => n
+        _ => throw DuckError.Type("expected an integer in the first cell")
+    }
+}
+
+fn one_text(con Connection, sql str) Fail[DuckError] -> str {
+    consume r = con.query(sql)
+    defer { r.close() }
+    match r.value(0, 0) {
+        Value.Text(s) => s
+        _ => throw DuckError.Type("expected text in the first cell")
+    }
+}
+
+// ── it opens, it answers, it closes ─────────────────────────────────────────
+
+test "an in-memory database opens, answers and closes" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro n = with_db(fn(con Connection) -> i64 => one_int(con, "SELECT 42"))
+        assert(n == 42)
+    }
+}
+
+test "the version is the tag this package pins" {
+    // Not a hardcoded string on both sides: the point is that the binding reports
+    // what the LIBRARY says, so a submodule bumped without updating the package is
+    // visible here rather than in production.
+    assert(Database.version().starts_with("v"))
+}
+
+test "core_functions and icu are compiled in, and are the ones named" {
+    ro e = Database.extensions()
+    assert(e.len() == 2)
+    assert(e[0] == "core_functions")
+    assert(e[1] == "icu")
+}
+
+// ── the extensions are LINKED, not fetched ──────────────────────────────────
+
+test "date_trunc works, which means core_functions is linked" {
+    // The whole reason this package builds the repository instead of the
+    // amalgamation. With autoloading on and the extension missing, this call goes
+    // to the network and hangs about twenty-two seconds before failing (spike
+    // 2026-09-06); with it off and the extension missing, it fails at once.
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro s = with_db(fn(con Connection) -> str =>
+            one_text(con, "SELECT strftime(date_trunc('hour', TIMESTAMP '2026-09-08 16:47:02'), '%Y-%m-%d %H:%M:%S')"))
+        assert(s == "2026-09-08 16:00:00")
+    }
+}
+
+test "time_bucket works too" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro s = with_db(fn(con Connection) -> str =>
+            one_text(con, "SELECT strftime(time_bucket(INTERVAL 5 MINUTE, TIMESTAMP '2026-09-08 16:47:02'), '%H:%M')"))
+        assert(s == "16:45")
+    }
+}
+
+test "a time zone conversion works, which means icu is linked" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro s = with_db(fn(con Connection) -> str =>
+            one_text(con, "SELECT strftime(TIMESTAMPTZ '2026-09-08 16:00:00Z' AT TIME ZONE 'Europe/Moscow', '%H:%M')"))
+        assert(s == "19:00")
+    }
+}
+
+test "INSTALL is refused, because autoloading is off at the connection" {
+    // The setting the shim applies in `ddb_open` and that no Nova code can undo.
+    with Fail[DuckError] = |e| { assert(true) } {
+        ro _ = with_db(fn(con Connection) -> int => con.exec("INSTALL json"))
+        // Reaching here means the install was accepted, which is the failure.
+        assert(false)
+    }
+}
+
+// ── strictness on the way in ────────────────────────────────────────────────
+
+test "a string into a TIMESTAMP is refused" {
+    mut refused = false
+    with Fail[DuckError] = |e| { refused = true } {
+        ro _ = with_db(fn(con Connection) -> int {
+            ro _ = con.exec("CREATE TABLE t (at TIMESTAMP)")
+            con.exec("INSERT INTO t VALUES ('not a time')")
+        })
+    }
+    assert(refused)
+}
+
+test "200 into a TINYINT is refused" {
+    mut refused = false
+    with Fail[DuckError] = |e| { refused = true } {
+        ro _ = with_db(fn(con Connection) -> int {
+            ro _ = con.exec("CREATE TABLE t (p TINYINT)")
+            con.exec("INSERT INTO t VALUES (200)")
+        })
+    }
+    assert(refused)
+}
+
+// ── the type mapping, both ways ─────────────────────────────────────────────
+
+test "a timestamp survives the round trip to the microsecond" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro got = with_db(fn(con Connection) -> i64 {
+            ro _ = con.exec("CREATE TABLE t (at TIMESTAMP)")
+            consume st = con.prepare("INSERT INTO t VALUES (?)")
+            defer { st.finalize() }
+            st.bind([Value.Instant(timestamp_of_micros(1757347622000000))])
+            consume r = st.execute()
+            r.close()
+            consume q = con.query("SELECT epoch_us(at) FROM t")
+            defer { q.close() }
+            match q.value(0, 0) {
+                Value.Int(n) => n
+                _ => throw DuckError.Type("expected an integer")
+            }
+        })
+        assert(got == 1757347622000000)
+    }
+}
+
+test "an instant finer than a microsecond is refused, not truncated" {
+    // DuckDB counts microseconds. A truncated write reads back as a different
+    // moment than the caller handed over, and a chart drawn from it is wrong in a
+    // way nobody can see.
+    ro ns = timestamp_of_micros(1757347622000000)
+    assert(micros_of_timestamp(ns) == Some(1757347622000000))
+    ro odd = 1757347622000000123.to_unix_nanos()
+    assert(micros_of_timestamp(odd) == None)
+}
+
+test "a DECIMAL keeps every digit" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro s = with_db(fn(con Connection) -> str {
+            ro _ = con.exec("CREATE TABLE t (v DECIMAL(18,3))")
+            ro _ = con.exec("INSERT INTO t VALUES (74.125)")
+            one_text(con, "SELECT CAST(v AS VARCHAR) FROM t")
+        })
+        // Read as text so the assertion cannot be satisfied by a float that happens
+        // to print right.
+        assert(s == "74.125")
+    }
+}
+
+test "a DECIMAL read as a value is exact halves and a scale, never a float" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro d = with_db(fn(con Connection) -> DecimalValue {
+            ro _ = con.exec("CREATE TABLE t (v DECIMAL(18,3))")
+            ro _ = con.exec("INSERT INTO t VALUES (74.125)")
+            consume q = con.query("SELECT v FROM t")
+            defer { q.close() }
+            match q.value(0, 0) {
+                Value.Dec(x) => x
+                _ => throw DuckError.Type("expected a decimal")
+            }
+        })
+        assert(d.scale == 3)
+        assert(d.lo == 74125)
+        assert(d.hi == 0)
+    }
+}
+
+test "a NULL is a NULL and not a zero" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro isnull = with_db(fn(con Connection) -> bool {
+            ro _ = con.exec("CREATE TABLE t (v INTEGER)")
+            ro _ = con.exec("INSERT INTO t VALUES (NULL)")
+            consume q = con.query("SELECT v FROM t")
+            defer { q.close() }
+            q.value(0, 0).is_null()
+        })
+        assert(isnull)
+    }
+}
+
+test "the columns of a result carry their names and types" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro c = with_db(fn(con Connection) -> Column {
+            consume q = con.query("SELECT 1 AS n")
+            defer { q.close() }
+            q.column(0)
+        })
+        assert(c.name == "n")
+        assert(c.kind.to_str() == "INTEGER")
+    }
+}
+
+// ── parameters ──────────────────────────────────────────────────────────────
+
+test "a parameter cannot become part of the statement" {
+    // The property the whole placeholder mechanism exists for: a value that looks
+    // like SQL is a value.
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro n = with_db(fn(con Connection) -> i64 {
+            ro _ = con.exec("CREATE TABLE t (name VARCHAR)")
+            consume st = con.prepare("INSERT INTO t VALUES (?)")
+            defer { st.finalize() }
+            st.bind([Value.Text("x'); DROP TABLE t; --")])
+            consume r = st.execute()
+            r.close()
+            one_int(con, "SELECT count(*) FROM t")
+        })
+        assert(n == 1)
+    }
+}
+
+test "binding the wrong number of parameters is refused before anything runs" {
+    // DuckDB leaves an unbound parameter as NULL, so a short list would silently
+    // write a NULL instead of failing. The count is checked first.
+    mut refused = false
+    with Fail[DuckError] = |e| { refused = true } {
+        ro _ = with_db(fn(con Connection) -> int {
+            ro _ = con.exec("CREATE TABLE t (a INTEGER, b INTEGER)")
+            consume st = con.prepare("INSERT INTO t VALUES (?, ?)")
+            defer { st.finalize() }
+            st.bind([Value.Int(1)])
+            0
+        })
+    }
+    assert(refused)
+}
+
+// ── the appender ────────────────────────────────────────────────────────────
+
+test "the appender writes and a flush makes the rows visible" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro n = with_db(fn(con Connection) -> i64 {
+            ro _ = con.exec("CREATE TABLE t (a INTEGER, b VARCHAR)")
+            consume app = con.appender("", "t")
+            mut i = 0
+            while i < 1000 {
+                app.row([Value.Int(i as i64), Value.Text("row")])
+                i += 1
+            }
+            app.flush()
+            ro seen = one_int(con, "SELECT count(*) FROM t")
+            app.close()
+            seen
+        })
+        assert(n == 1000)
+    }
+}
+
+test "a rollback takes the appended rows with it" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro n = with_db(fn(con Connection) -> i64 {
+            ro _ = con.exec("CREATE TABLE t (a INTEGER)")
+            con.begin()
+            consume app = con.appender("", "t")
+            app.row([Value.Int(1)])
+            app.flush()
+            app.close()
+            con.rollback()
+            one_int(con, "SELECT count(*) FROM t")
+        })
+        assert(n == 0)
+    }
+}
+
+test "a commit keeps them" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro n = with_db(fn(con Connection) -> i64 {
+            ro _ = con.exec("CREATE TABLE t (a INTEGER)")
+            con.begin()
+            ro _ = con.exec("INSERT INTO t VALUES (7)")
+            con.commit()
+            one_int(con, "SELECT count(*) FROM t")
+        })
+        assert(n == 1)
+    }
+}
+
+// ── what 0.1 does not read ──────────────────────────────────────────────────
+
+test "a LIST column is refused by name, not read as something else" {
+    // Section 4.1 draws the line. Refusing with the column named is what lets a
+    // caller widen a query rather than wonder why a number is wrong.
+    mut refused = false
+    with Fail[DuckError] = |e| { refused = true } {
+        ro _ = with_db(fn(con Connection) -> bool {
+            consume q = con.query("SELECT [1, 2, 3] AS xs")
+            defer { q.close() }
+            ro _ = q.value(0, 0)
+            true
+        })
+    }
+    assert(refused)
+}

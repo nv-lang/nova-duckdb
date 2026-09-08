@@ -1,0 +1,87 @@
+// sqltag.nv — the bridge from `sql`…`` to this package's parameters.
+//
+// Source: subplan 01.4 §4 ("`sqltag.nv` адаптер std/data/sql: Sql -> (text,
+// []SqlValue) -> bind").
+//
+// ── Why a separate file, and why the facade does not import it ──────────────
+//
+// `std/data/sql.nv` gives a caller `sql\`SELECT … WHERE id = ${x}\``, which builds a
+// template with `?` placeholders and a list of arguments beside it — the whole
+// point being that a value never becomes part of the text, so injection is not a
+// thing that can happen. That is worth having, and it is also a dependency the
+// binding itself does not need: `duckdb.nv` speaks its own `Value` and knows
+// nothing about `Sql`.
+//
+// Keeping the adapter here means a consumer who wants the tag gets it, a consumer
+// who does not is not made to link it, and the CONVERSION between the two value
+// vocabularies lives in exactly one place instead of being re-decided per call
+// site.
+//
+// ── The one asymmetry, said out loud ────────────────────────────────────────
+//
+// `SqlValue` is deliberately small — six shapes, the ones any SQL database has.
+// This package's `Value` has fourteen, because DuckDB has real types and the whole
+// reason 01.2 chose it was to keep them. So the conversion is total in one
+// direction and partial in the other: every `SqlValue` becomes a `Value`, while a
+// `Value` carrying a timestamp, a UUID or an exact decimal has no `SqlValue` to
+// become. Callers who need those bind through `Statement.@bind` directly.
+
+module duckdb.sqltag
+
+import duckdb.{QueryResult, DuckError}
+import duckdb.types.{Value}
+import std.data.sql.{Sql, SqlValue}
+
+/// One `SqlValue` as the parameter this package binds.
+///
+/// `Bytes` becomes `Value.Bytes` and therefore a BLOB, not a string: the two are
+/// different columns in DuckDB and guessing from content would be worse than either.
+export fn value_of(v SqlValue) -> Value {
+    match v {
+        SqlValue.I(n) => Value.Int(n)
+        SqlValue.F(x) => Value.Real(x)
+        SqlValue.S(s) => Value.Text(s)
+        SqlValue.B(b) => Value.Bool(b)
+        SqlValue.Bytes(b) => Value.Bytes(b)
+        SqlValue.Null => Value.Null
+    }
+}
+
+export fn values_of(args []SqlValue) -> []Value {
+    mut out = []Value.new()
+    for a in args { out.push(value_of(a)) }
+    out
+}
+
+/// Prepare, bind and run a fragment in one call.
+///
+/// The statement is finalised before returning, including on the way out through a
+/// failure — a prepared statement left behind on an error path is a leak that only
+/// shows up under load, which is where it is hardest to find.
+export fn Connection @run(q Sql) Fail[DuckError] -> QueryResult {
+    // `consume` at the binding (D180) and `defer` for the cleanup (D162): the
+    // compiler asked for both, and it was right to -- the doc line above promises
+    // the statement is finalised "including on the way out through a failure", and
+    // `defer` is the only spelling that actually keeps that promise.
+    //
+    // The result is NOT bound to a name: it is the return value, and binding it
+    // would oblige this function to cover its error path too, for an object the
+    // CALLER owns. Handing it back straight from `execute()` says that plainly.
+    consume st = @prepare(q.template)
+    defer { st.finalize() }
+    st.bind(values_of(q.args))
+    st.execute()
+}
+
+/// The same for a statement with nothing to return: rows changed.
+///
+/// Here the result IS owned by this function, so it is bound and deferred -- the
+/// difference between the two bodies is exactly the difference in who owns what.
+export fn Connection @run_exec(q Sql) Fail[DuckError] -> int {
+    consume st = @prepare(q.template)
+    defer { st.finalize() }
+    st.bind(values_of(q.args))
+    consume r = st.execute()
+    defer { r.close() }
+    r.rows()
+}

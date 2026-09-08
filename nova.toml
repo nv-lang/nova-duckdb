@@ -41,11 +41,18 @@ libs = [
   "duckdb_fsst", "duckdb_zstd", "duckdb_miniz",
 ]
 
-# DECLARED EVEN WHILE THE DIRECTORY IS EMPTY, and that is the point. A bare `libs`
-# with no `lib_dirs` skips the detect-and-degrade probe entirely and hard-fails at
-# link time; with `lib_dirs` present, a checkout that has not built DuckDB yet gets
-# a SKIP from `nova test` instead of a wall of linker errors. Package-relative, so
-# it resolves the same standalone and as a path dependency.
+# Declared even while the directory is empty: a bare `libs` with no `lib_dirs`
+# skips the detect-and-degrade probe entirely and hard-fails at link time.
+# Package-relative, so it resolves the same standalone and as a path dependency.
+#
+# CORRECTION 2026-09-08, and it was mine. This comment first said that `lib_dirs`
+# makes `nova test` SKIP on a checkout where DuckDB has not been built. IT DOES
+# NOT, measured by running it: the probe degrades on missing LIBRARIES, but the
+# `c_shims` are still compiled, and the shim fails on `duckdb.h: file not found`
+# long before any library is looked for. So the honest state of a fresh checkout is
+# CC-FAIL on `src/duckdb_test`, not SKIP, until `scripts/build-duckdb.*` has run and
+# the submodule is present. I had generalised the claim from nova-tls's manifest
+# comment without trying it here.
 lib_dirs = ["native/lib"]
 
 # NO `vendor_src_dirs`, and this is where nova-duckdb parts from nova-tls. That

@@ -20,6 +20,14 @@
 
 module duckdb.ffi
 
+// `#thread_affine` ON EVERY ONE OF THEM (D441 §5, A-V10). A DuckDB connection is
+// not safe to use from two OS threads, and Nova's fibers can migrate between them,
+// so calling one of these from inside a `spawn` must be a COMPILE error
+// (`E_THREAD_AFFINE_IN_FIBER`) rather than a data race found in production. The
+// attribute propagates transitively through the call graph, so the whole facade
+// inherits it without repeating the tag on every method.
+//
+
 // Out-parameters are `*mut T`, not `*T`: the shim WRITES through them.
 // `std/net/ffi.nv` and `std/fs/ffi.nv` declare theirs the same way, and `&x` at the
 // call site is safe address-of (Plan 118.6) -- no `unsafe` block needed to make one.
@@ -59,76 +67,135 @@ export const KIND_APPENDER = 4
 
 // ── database and connection ──────────────────────────────────────────────────
 
+#thread_affine
 extern "C" fn ddb_open(path *u8, path_len int, temp_dir *u8, temp_dir_len int, memory_limit *u8, memory_limit_len int, threads int, read_only int, encryption_key *u8, encryption_key_len int, out_err *mut int) -> CDbHandle
+#thread_affine
 extern "C" fn ddb_connect(db CDbHandle, out_err *mut int) -> CConnHandle
+#thread_affine
 extern "C" fn ddb_disconnect(conn CConnHandle) -> ()
+#thread_affine
 extern "C" fn ddb_close(db CDbHandle) -> ()
+#thread_affine
 extern "C" fn ddb_version() -> *u8
 
+#thread_affine
 extern "C" fn ddb_last_error(handle *(), kind int, out_len *mut int) -> *u8
 
 // ── queries ──────────────────────────────────────────────────────────────────
 
+#thread_affine
 extern "C" fn ddb_exec(conn CConnHandle, sql *u8, sql_len int, out_changed *mut i64) -> int
+#thread_affine
 extern "C" fn ddb_query(conn CConnHandle, sql *u8, sql_len int, out_err *mut int) -> CResultHandle
+#thread_affine
 extern "C" fn ddb_result_free(result CResultHandle) -> ()
+#thread_affine
 extern "C" fn ddb_result_rows(result CResultHandle) -> i64
+#thread_affine
 extern "C" fn ddb_result_cols(result CResultHandle) -> i64
+#thread_affine
 extern "C" fn ddb_result_col_name(result CResultHandle, col i64, out_len *mut int) -> *u8
+#thread_affine
 extern "C" fn ddb_result_col_type(result CResultHandle, col i64) -> int
 
 // ── reading one value ────────────────────────────────────────────────────────
 
+#thread_affine
 extern "C" fn ddb_value_is_null(result CResultHandle, row i64, col i64) -> int
+#thread_affine
 extern "C" fn ddb_value_bool(result CResultHandle, row i64, col i64, out *mut int) -> int
+#thread_affine
 extern "C" fn ddb_value_i64(result CResultHandle, row i64, col i64, out *mut i64) -> int
+#thread_affine
 extern "C" fn ddb_value_u64(result CResultHandle, row i64, col i64, out *mut u64) -> int
+#thread_affine
 extern "C" fn ddb_value_f64(result CResultHandle, row i64, col i64, out *mut f64) -> int
+#thread_affine
 extern "C" fn ddb_value_hugeint(result CResultHandle, row i64, col i64, out_hi *mut i64, out_lo *mut u64) -> int
+#thread_affine
 extern "C" fn ddb_value_decimal(result CResultHandle, row i64, col i64, out_hi *mut i64, out_lo *mut u64, out_scale *mut int) -> int
+#thread_affine
 extern "C" fn ddb_value_timestamp(result CResultHandle, row i64, col i64, out_us *mut i64) -> int
+#thread_affine
 extern "C" fn ddb_value_date(result CResultHandle, row i64, col i64, out_days *mut i32) -> int
+#thread_affine
 extern "C" fn ddb_value_time(result CResultHandle, row i64, col i64, out_us *mut i64) -> int
+#thread_affine
 extern "C" fn ddb_value_interval(result CResultHandle, row i64, col i64, out_months *mut i32, out_days *mut i32, out_us *mut i64) -> int
+#thread_affine
 extern "C" fn ddb_value_uuid(result CResultHandle, row i64, col i64, out16 *mut u8) -> int
+#thread_affine
 extern "C" fn ddb_value_bytes(result CResultHandle, row i64, col i64, out_len *mut int) -> *u8
+#thread_affine
 extern "C" fn ddb_value_blob(result CResultHandle, row i64, col i64, out_len *mut int) -> *u8
 
 // ── prepared statements ──────────────────────────────────────────────────────
 
+#thread_affine
 extern "C" fn ddb_prepare(conn CConnHandle, sql *u8, sql_len int, out_err *mut int) -> CStmtHandle
+#thread_affine
 extern "C" fn ddb_stmt_free(stmt CStmtHandle) -> ()
+#thread_affine
 extern "C" fn ddb_stmt_param_count(stmt CStmtHandle) -> i64
+#thread_affine
 extern "C" fn ddb_stmt_execute(stmt CStmtHandle, out_err *mut int) -> CResultHandle
+#thread_affine
 extern "C" fn ddb_stmt_clear(stmt CStmtHandle) -> int
 
+#thread_affine
 extern "C" fn ddb_bind_null(stmt CStmtHandle, i i64) -> int
+#thread_affine
 extern "C" fn ddb_bind_bool(stmt CStmtHandle, i i64, v int) -> int
+#thread_affine
 extern "C" fn ddb_bind_i64(stmt CStmtHandle, i i64, v i64) -> int
+#thread_affine
 extern "C" fn ddb_bind_u64(stmt CStmtHandle, i i64, v u64) -> int
+#thread_affine
 extern "C" fn ddb_bind_f64(stmt CStmtHandle, i i64, v f64) -> int
+#thread_affine
 extern "C" fn ddb_bind_hugeint(stmt CStmtHandle, i i64, hi i64, lo u64) -> int
+#thread_affine
 extern "C" fn ddb_bind_decimal(stmt CStmtHandle, i i64, hi i64, lo u64, scale int) -> int
+#thread_affine
 extern "C" fn ddb_bind_timestamp(stmt CStmtHandle, i i64, us i64) -> int
+#thread_affine
 extern "C" fn ddb_bind_date(stmt CStmtHandle, i i64, days i32) -> int
+#thread_affine
 extern "C" fn ddb_bind_time(stmt CStmtHandle, i i64, us i64) -> int
+#thread_affine
 extern "C" fn ddb_bind_uuid(stmt CStmtHandle, i i64, b16 *u8) -> int
+#thread_affine
 extern "C" fn ddb_bind_bytes(stmt CStmtHandle, i i64, p *u8, len int, is_blob int) -> int
 
 // ── appender ─────────────────────────────────────────────────────────────────
 
+#thread_affine
 extern "C" fn ddb_appender_create(conn CConnHandle, schema *u8, schema_len int, table *u8, table_len int, out_err *mut int) -> CAppHandle
+#thread_affine
 extern "C" fn ddb_append_null(app CAppHandle) -> int
+#thread_affine
 extern "C" fn ddb_append_bool(app CAppHandle, v int) -> int
+#thread_affine
 extern "C" fn ddb_append_i64(app CAppHandle, v i64) -> int
+#thread_affine
 extern "C" fn ddb_append_u64(app CAppHandle, v u64) -> int
+#thread_affine
 extern "C" fn ddb_append_f64(app CAppHandle, v f64) -> int
+#thread_affine
 extern "C" fn ddb_append_hugeint(app CAppHandle, hi i64, lo u64) -> int
+#thread_affine
 extern "C" fn ddb_append_timestamp(app CAppHandle, us i64) -> int
+#thread_affine
 extern "C" fn ddb_append_date(app CAppHandle, days i32) -> int
+#thread_affine
 extern "C" fn ddb_append_time(app CAppHandle, us i64) -> int
+#thread_affine
 extern "C" fn ddb_append_uuid(app CAppHandle, b16 *u8) -> int
+#thread_affine
 extern "C" fn ddb_append_bytes(app CAppHandle, p *u8, len int, is_blob int) -> int
+#thread_affine
 extern "C" fn ddb_append_end_row(app CAppHandle) -> int
+#thread_affine
 extern "C" fn ddb_appender_flush(app CAppHandle) -> int
+#thread_affine
 extern "C" fn ddb_appender_close(app CAppHandle) -> int
