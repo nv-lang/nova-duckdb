@@ -49,6 +49,10 @@ jobs:
       - name: Build DuckDB (Linux)
         if: runner.os == 'Linux'
         run: ./scripts/build-duckdb.sh
+      # Before the upload, so a drifted list fails the job instead of being
+      # published as an artefact that later jobs trust.
+      - name: '[ffi] libs still matches what the build produced'
+        run: python scripts/check-libs-manifest.py
       - name: Upload the static libraries
         uses: actions/upload-artifact@v4
         with:
