@@ -74,19 +74,27 @@
 extern "C" {
 #endif
 
+/* MACRO NAMES ARE PREFIXED `DDBC_`, and the prefix is load-bearing. This header is
+ * force-included into EVERY translation unit, and Nova emits its own constants as C
+ * `static const` with the names it uses -- so a macro called `DDB_OK` turned
+ * `static const nova_int DDB_OK = 0;` into `static const nova_int 0 = 0;` and clang
+ * said only "expected identifier". The Nova side keeps the short names; the C side
+ * carries the prefix, because the C side is the one that pollutes.
+ */
+
 /* ── error codes ────────────────────────────────────────────────────────────
  *
  * Deliberately few. Nova turns these into `DuckError`, whose variants match one
  * for one; a code that means nothing to Nova would be a code Nova has to guess
  * about. */
-#define DDB_OK        0
-#define DDB_E_OPEN    1
-#define DDB_E_QUERY   2
-#define DDB_E_PREPARE 3
-#define DDB_E_BIND    4
-#define DDB_E_APPEND  5
-#define DDB_E_TYPE    6
-#define DDB_E_CLOSED  7
+#define DDBC_OK        0
+#define DDBC_E_OPEN    1
+#define DDBC_E_QUERY   2
+#define DDBC_E_PREPARE 3
+#define DDBC_E_BIND    4
+#define DDBC_E_APPEND  5
+#define DDBC_E_TYPE    6
+#define DDBC_E_CLOSED  7
 
 /* ── column types ───────────────────────────────────────────────────────────
  *
@@ -100,35 +108,35 @@ extern "C" {
  * type produces a COMPILE error in the shim's `switch` -- not a column silently
  * read as the wrong shape.
  *
- * `DDB_T_UNSUPPORTED` is deliberate and is not an error code: LIST, STRUCT, MAP,
+ * `DDBC_T_UNSUPPORTED` is deliberate and is not an error code: LIST, STRUCT, MAP,
  * ARRAY, UNION and BIT are out of scope for 0.1 (01.4 §4.1), and Nova turns this
  * into `DuckError.Type` naming the column, which is a better answer than a
  * mis-read value.
  */
-#define DDB_T_UNSUPPORTED  0
-#define DDB_T_BOOLEAN      1
-#define DDB_T_TINYINT      2
-#define DDB_T_SMALLINT     3
-#define DDB_T_INTEGER      4
-#define DDB_T_BIGINT       5
-#define DDB_T_UTINYINT     6
-#define DDB_T_USMALLINT    7
-#define DDB_T_UINTEGER     8
-#define DDB_T_UBIGINT      9
-#define DDB_T_HUGEINT     10
-#define DDB_T_FLOAT       11
-#define DDB_T_DOUBLE      12
-#define DDB_T_DECIMAL     13
-#define DDB_T_VARCHAR     14
-#define DDB_T_BLOB        15
-#define DDB_T_TIMESTAMP   16
-#define DDB_T_TIMESTAMPTZ 17
-#define DDB_T_DATE        18
-#define DDB_T_TIME        19
-#define DDB_T_INTERVAL    20
-#define DDB_T_ENUM        21
-#define DDB_T_UUID        22
-#define DDB_T_SQLNULL     23
+#define DDBC_T_UNSUPPORTED  0
+#define DDBC_T_BOOLEAN      1
+#define DDBC_T_TINYINT      2
+#define DDBC_T_SMALLINT     3
+#define DDBC_T_INTEGER      4
+#define DDBC_T_BIGINT       5
+#define DDBC_T_UTINYINT     6
+#define DDBC_T_USMALLINT    7
+#define DDBC_T_UINTEGER     8
+#define DDBC_T_UBIGINT      9
+#define DDBC_T_HUGEINT     10
+#define DDBC_T_FLOAT       11
+#define DDBC_T_DOUBLE      12
+#define DDBC_T_DECIMAL     13
+#define DDBC_T_VARCHAR     14
+#define DDBC_T_BLOB        15
+#define DDBC_T_TIMESTAMP   16
+#define DDBC_T_TIMESTAMPTZ 17
+#define DDBC_T_DATE        18
+#define DDBC_T_TIME        19
+#define DDBC_T_INTERVAL    20
+#define DDBC_T_ENUM        21
+#define DDBC_T_UUID        22
+#define DDBC_T_SQLNULL     23
 
 /* ── database and connection ────────────────────────────────────────────────*/
 
@@ -210,7 +218,7 @@ int ddb_value_timestamp(void *result, int64_t row, int64_t col, int64_t *out_us)
 int ddb_value_date(void *result, int64_t row, int64_t col, int32_t *out_days);
 /* Microseconds since midnight. */
 int ddb_value_time(void *result, int64_t row, int64_t col, int64_t *out_us);
-/* Months, days, microseconds. A non-zero month count is `DDB_E_TYPE`: Nova's
+/* Months, days, microseconds. A non-zero month count is `DDBC_E_TYPE`: Nova's
  * `Duration` has no months, and silently dropping them would move a date. */
 int ddb_value_interval(void *result, int64_t row, int64_t col,
                        int32_t *out_months, int32_t *out_days, int64_t *out_us);

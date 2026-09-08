@@ -123,7 +123,7 @@ void *ddb_open(const uint8_t *path, int path_len,
                int threads, int read_only,
                const uint8_t *encryption_key, int encryption_key_len,
                int *out_err) {
-    *out_err = DDB_OK;
+    *out_err = DDBC_OK;
 
     /* ENCRYPTION IS REFUSED RATHER THAN GUESSED. 01.2 §12 wants the file
      * encrypted, and DuckDB does support it, but the C-API spelling is not in the
@@ -131,20 +131,20 @@ void *ddb_open(const uint8_t *path, int path_len,
      * nothing — the worst possible outcome for a security setting. It arrives when
      * `duckdb.h` is on the machine to read. */
     if (encryption_key_len > 0) {
-        *out_err = DDB_E_OPEN;
+        *out_err = DDBC_E_OPEN;
         return NULL;
     }
 
     DdbDatabase *d = (DdbDatabase *)calloc(1, sizeof(DdbDatabase));
-    if (!d) { *out_err = DDB_E_OPEN; return NULL; }
+    if (!d) { *out_err = DDBC_E_OPEN; return NULL; }
 
     char *p = dup_str(path, path_len);
-    if (!p) { free(d); *out_err = DDB_E_OPEN; return NULL; }
+    if (!p) { free(d); *out_err = DDBC_E_OPEN; return NULL; }
     int rc = duckdb_open(p, &d->db);                        /* [SPIKE] */
     free(p);
     if (rc != DuckDBSuccess) {
         set_err(&d->err, "duckdb_open failed");
-        *out_err = DDB_E_OPEN;
+        *out_err = DDBC_E_OPEN;
         /* The box survives so the caller can read the message, then closes it. */
         return d;
     }
@@ -155,7 +155,7 @@ void *ddb_open(const uint8_t *path, int path_len,
     memset(&tmp, 0, sizeof(tmp));
     if (duckdb_connect(d->db, &tmp.con) != DuckDBSuccess) { /* [SPIKE] */
         set_err(&d->err, "duckdb_connect failed while applying settings");
-        *out_err = DDB_E_OPEN;
+        *out_err = DDBC_E_OPEN;
         return d;
     }
 
@@ -204,12 +204,12 @@ void *ddb_open(const uint8_t *path, int path_len,
          * `duckdb_open_ext` with a config, which is not in the spike.] */
         set_err(&d->err, "read_only is not implemented in 0.1: it needs duckdb_open_ext with a config");
         ok = 0;
-        *out_err = DDB_E_OPEN;
+        *out_err = DDBC_E_OPEN;
     }
 
-    if (!ok && *out_err == DDB_OK) {
+    if (!ok && *out_err == DDBC_OK) {
         set_err(&d->err, tmp.err ? tmp.err : "applying the mandatory settings failed");
-        *out_err = DDB_E_OPEN;
+        *out_err = DDBC_E_OPEN;
     }
     if (tmp.err) free(tmp.err);
     duckdb_disconnect(&tmp.con);                            /* [SPIKE] */
@@ -217,14 +217,14 @@ void *ddb_open(const uint8_t *path, int path_len,
 }
 
 void *ddb_connect(void *db, int *out_err) {
-    *out_err = DDB_OK;
+    *out_err = DDBC_OK;
     DdbDatabase *d = (DdbDatabase *)db;
-    if (!d) { *out_err = DDB_E_CLOSED; return NULL; }
+    if (!d) { *out_err = DDBC_E_CLOSED; return NULL; }
     DdbConnection *c = (DdbConnection *)calloc(1, sizeof(DdbConnection));
-    if (!c) { *out_err = DDB_E_OPEN; return NULL; }
+    if (!c) { *out_err = DDBC_E_OPEN; return NULL; }
     if (duckdb_connect(d->db, &c->con) != DuckDBSuccess) {  /* [SPIKE] */
         set_err(&d->err, "duckdb_connect failed");
-        *out_err = DDB_E_OPEN;
+        *out_err = DDBC_E_OPEN;
         free(c);
         return NULL;
     }
@@ -256,37 +256,37 @@ const char *ddb_version(void) {
 int ddb_exec(void *conn, const uint8_t *sql, int sql_len, int64_t *out_changed) {
     DdbConnection *c = (DdbConnection *)conn;
     *out_changed = 0;
-    if (!c) return DDB_E_CLOSED;
+    if (!c) return DDBC_E_CLOSED;
     char *s = dup_str(sql, sql_len);
-    if (!s) return DDB_E_QUERY;
+    if (!s) return DDBC_E_QUERY;
     duckdb_result r;
     int rc = duckdb_query(c->con, s, &r);                   /* [SPIKE] */
     free(s);
     if (rc != DuckDBSuccess) {
         set_err(&c->err, duckdb_result_error(&r));          /* [SPIKE] */
         duckdb_destroy_result(&r);
-        return DDB_E_QUERY;
+        return DDBC_E_QUERY;
     }
     *out_changed = (int64_t)duckdb_rows_changed(&r);        /* [BY-NAME] */
     duckdb_destroy_result(&r);
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 void *ddb_query(void *conn, const uint8_t *sql, int sql_len, int *out_err) {
-    *out_err = DDB_OK;
+    *out_err = DDBC_OK;
     DdbConnection *c = (DdbConnection *)conn;
-    if (!c) { *out_err = DDB_E_CLOSED; return NULL; }
+    if (!c) { *out_err = DDBC_E_CLOSED; return NULL; }
     char *s = dup_str(sql, sql_len);
-    if (!s) { *out_err = DDB_E_QUERY; return NULL; }
+    if (!s) { *out_err = DDBC_E_QUERY; return NULL; }
     DdbResult *out = (DdbResult *)calloc(1, sizeof(DdbResult));
-    if (!out) { free(s); *out_err = DDB_E_QUERY; return NULL; }
+    if (!out) { free(s); *out_err = DDBC_E_QUERY; return NULL; }
     int rc = duckdb_query(c->con, s, &out->res);            /* [SPIKE] */
     free(s);
     if (rc != DuckDBSuccess) {
         set_err(&c->err, duckdb_result_error(&out->res));   /* [SPIKE] */
         duckdb_destroy_result(&out->res);
         free(out);
-        *out_err = DDB_E_QUERY;
+        *out_err = DDBC_E_QUERY;
         return NULL;
     }
     out->valid = 1;
@@ -327,7 +327,7 @@ const uint8_t *ddb_result_col_name(void *result, int64_t col, int *out_len) {
 
 int ddb_result_col_type(void *result, int64_t col) {
     DdbResult *r = (DdbResult *)result;
-    if (!r || !r->valid) return DDB_T_UNSUPPORTED;
+    if (!r || !r->valid) return DDBC_T_UNSUPPORTED;
     /* [BY-NAME] `duckdb_column_type` and the `DUCKDB_TYPE_*` constants.
      *
      * The switch is exhaustive over what 0.1 reads and falls through to
@@ -335,30 +335,30 @@ int ddb_result_col_type(void *result, int64_t col) {
      * version adding a type must not make an existing column read as something
      * else, and `UNSUPPORTED` becomes a named refusal on the Nova side. */
     switch (duckdb_column_type(&r->res, (idx_t)col)) {
-        case DUCKDB_TYPE_BOOLEAN:      return DDB_T_BOOLEAN;
-        case DUCKDB_TYPE_TINYINT:      return DDB_T_TINYINT;
-        case DUCKDB_TYPE_SMALLINT:     return DDB_T_SMALLINT;
-        case DUCKDB_TYPE_INTEGER:      return DDB_T_INTEGER;
-        case DUCKDB_TYPE_BIGINT:       return DDB_T_BIGINT;
-        case DUCKDB_TYPE_UTINYINT:     return DDB_T_UTINYINT;
-        case DUCKDB_TYPE_USMALLINT:    return DDB_T_USMALLINT;
-        case DUCKDB_TYPE_UINTEGER:     return DDB_T_UINTEGER;
-        case DUCKDB_TYPE_UBIGINT:      return DDB_T_UBIGINT;
-        case DUCKDB_TYPE_HUGEINT:      return DDB_T_HUGEINT;
-        case DUCKDB_TYPE_FLOAT:        return DDB_T_FLOAT;
-        case DUCKDB_TYPE_DOUBLE:       return DDB_T_DOUBLE;
-        case DUCKDB_TYPE_DECIMAL:      return DDB_T_DECIMAL;
-        case DUCKDB_TYPE_VARCHAR:      return DDB_T_VARCHAR;
-        case DUCKDB_TYPE_BLOB:         return DDB_T_BLOB;
-        case DUCKDB_TYPE_TIMESTAMP:    return DDB_T_TIMESTAMP;
-        case DUCKDB_TYPE_TIMESTAMP_TZ: return DDB_T_TIMESTAMPTZ;
-        case DUCKDB_TYPE_DATE:         return DDB_T_DATE;
-        case DUCKDB_TYPE_TIME:         return DDB_T_TIME;
-        case DUCKDB_TYPE_INTERVAL:     return DDB_T_INTERVAL;
-        case DUCKDB_TYPE_ENUM:         return DDB_T_ENUM;
-        case DUCKDB_TYPE_UUID:         return DDB_T_UUID;
-        case DUCKDB_TYPE_SQLNULL:      return DDB_T_SQLNULL;
-        default:                       return DDB_T_UNSUPPORTED;
+        case DUCKDB_TYPE_BOOLEAN:      return DDBC_T_BOOLEAN;
+        case DUCKDB_TYPE_TINYINT:      return DDBC_T_TINYINT;
+        case DUCKDB_TYPE_SMALLINT:     return DDBC_T_SMALLINT;
+        case DUCKDB_TYPE_INTEGER:      return DDBC_T_INTEGER;
+        case DUCKDB_TYPE_BIGINT:       return DDBC_T_BIGINT;
+        case DUCKDB_TYPE_UTINYINT:     return DDBC_T_UTINYINT;
+        case DUCKDB_TYPE_USMALLINT:    return DDBC_T_USMALLINT;
+        case DUCKDB_TYPE_UINTEGER:     return DDBC_T_UINTEGER;
+        case DUCKDB_TYPE_UBIGINT:      return DDBC_T_UBIGINT;
+        case DUCKDB_TYPE_HUGEINT:      return DDBC_T_HUGEINT;
+        case DUCKDB_TYPE_FLOAT:        return DDBC_T_FLOAT;
+        case DUCKDB_TYPE_DOUBLE:       return DDBC_T_DOUBLE;
+        case DUCKDB_TYPE_DECIMAL:      return DDBC_T_DECIMAL;
+        case DUCKDB_TYPE_VARCHAR:      return DDBC_T_VARCHAR;
+        case DUCKDB_TYPE_BLOB:         return DDBC_T_BLOB;
+        case DUCKDB_TYPE_TIMESTAMP:    return DDBC_T_TIMESTAMP;
+        case DUCKDB_TYPE_TIMESTAMP_TZ: return DDBC_T_TIMESTAMPTZ;
+        case DUCKDB_TYPE_DATE:         return DDBC_T_DATE;
+        case DUCKDB_TYPE_TIME:         return DDBC_T_TIME;
+        case DUCKDB_TYPE_INTERVAL:     return DDBC_T_INTERVAL;
+        case DUCKDB_TYPE_ENUM:         return DDBC_T_ENUM;
+        case DUCKDB_TYPE_UUID:         return DDBC_T_UUID;
+        case DUCKDB_TYPE_SQLNULL:      return DDBC_T_SQLNULL;
+        default:                       return DDBC_T_UNSUPPORTED;
     }
 }
 
@@ -373,30 +373,30 @@ int ddb_value_is_null(void *result, int64_t row, int64_t col) {
     return duckdb_value_is_null(&r->res, (idx_t)col, (idx_t)row) ? 1 : 0; /* [BY-NAME] */
 }
 
-#define DDB_GUARD(r) DdbResult *r = (DdbResult *)result; if (!r || !r->valid) return DDB_E_CLOSED;
+#define DDB_GUARD(r) DdbResult *r = (DdbResult *)result; if (!r || !r->valid) return DDBC_E_CLOSED;
 
 int ddb_value_bool(void *result, int64_t row, int64_t col, int *out) {
     DDB_GUARD(r)
     *out = duckdb_value_boolean(&r->res, (idx_t)col, (idx_t)row) ? 1 : 0; /* [BY-NAME] */
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 int ddb_value_i64(void *result, int64_t row, int64_t col, int64_t *out) {
     DDB_GUARD(r)
     *out = (int64_t)duckdb_value_int64(&r->res, (idx_t)col, (idx_t)row);  /* [SPIKE] */
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 int ddb_value_u64(void *result, int64_t row, int64_t col, uint64_t *out) {
     DDB_GUARD(r)
     *out = (uint64_t)duckdb_value_uint64(&r->res, (idx_t)col, (idx_t)row); /* [BY-NAME] */
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 int ddb_value_f64(void *result, int64_t row, int64_t col, double *out) {
     DDB_GUARD(r)
     *out = duckdb_value_double(&r->res, (idx_t)col, (idx_t)row);          /* [BY-NAME] */
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 int ddb_value_hugeint(void *result, int64_t row, int64_t col, int64_t *out_hi, uint64_t *out_lo) {
@@ -404,7 +404,7 @@ int ddb_value_hugeint(void *result, int64_t row, int64_t col, int64_t *out_hi, u
     duckdb_hugeint h = duckdb_value_hugeint(&r->res, (idx_t)col, (idx_t)row); /* [BY-NAME] */
     *out_hi = h.upper;
     *out_lo = h.lower;
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 int ddb_value_decimal(void *result, int64_t row, int64_t col,
@@ -414,28 +414,28 @@ int ddb_value_decimal(void *result, int64_t row, int64_t col,
     *out_hi = d.value.upper;
     *out_lo = d.value.lower;
     *out_scale = (int)d.scale;
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 int ddb_value_timestamp(void *result, int64_t row, int64_t col, int64_t *out_us) {
     DDB_GUARD(r)
     duckdb_timestamp t = duckdb_value_timestamp(&r->res, (idx_t)col, (idx_t)row); /* [BY-NAME]; the struct's `.micros` is [SPIKE] */
     *out_us = t.micros;
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 int ddb_value_date(void *result, int64_t row, int64_t col, int32_t *out_days) {
     DDB_GUARD(r)
     duckdb_date d = duckdb_value_date(&r->res, (idx_t)col, (idx_t)row);   /* [BY-NAME] */
     *out_days = d.days;
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 int ddb_value_time(void *result, int64_t row, int64_t col, int64_t *out_us) {
     DDB_GUARD(r)
     duckdb_time t = duckdb_value_time(&r->res, (idx_t)col, (idx_t)row);   /* [BY-NAME] */
     *out_us = t.micros;
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 int ddb_value_interval(void *result, int64_t row, int64_t col,
@@ -445,7 +445,7 @@ int ddb_value_interval(void *result, int64_t row, int64_t col,
     *out_months = v.months;
     *out_days = v.days;
     *out_us = v.micros;
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 int ddb_value_uuid(void *result, int64_t row, int64_t col, uint8_t *out16) {
@@ -458,7 +458,7 @@ int ddb_value_uuid(void *result, int64_t row, int64_t col, uint8_t *out16) {
     uint64_t lo = h.lower;
     for (int i = 0; i < 8; i++) out16[i] = (uint8_t)(hi >> (56 - 8 * i));
     for (int i = 0; i < 8; i++) out16[8 + i] = (uint8_t)(lo >> (56 - 8 * i));
-    return DDB_OK;
+    return DDBC_OK;
 }
 
 const uint8_t *ddb_value_bytes(void *result, int64_t row, int64_t col, int *out_len) {

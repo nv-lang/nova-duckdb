@@ -1,0 +1,3 @@
+[submodule "native/duckdb"]
+	path = native/duckdb
+	url = https://github.com/duckdb/duckdb.git

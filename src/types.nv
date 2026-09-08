@@ -18,7 +18,9 @@
 
 module duckdb.types
 
-import duckdb.ffi
+// BY NAME, not `import duckdb.ffi` plus `ffi.DDB_T_...`: a module-qualified
+// constant compiles to `ffi->DDB_T_...` and the checker does not catch it.
+import duckdb.ffi.{DDB_T_UNSUPPORTED, DDB_T_BOOLEAN, DDB_T_TINYINT, DDB_T_SMALLINT, DDB_T_INTEGER, DDB_T_BIGINT, DDB_T_UTINYINT, DDB_T_USMALLINT, DDB_T_UINTEGER, DDB_T_UBIGINT, DDB_T_HUGEINT, DDB_T_FLOAT, DDB_T_DOUBLE, DDB_T_DECIMAL, DDB_T_VARCHAR, DDB_T_BLOB, DDB_T_TIMESTAMP, DDB_T_TIMESTAMPTZ, DDB_T_DATE, DDB_T_TIME, DDB_T_INTERVAL, DDB_T_ENUM, DDB_T_UUID, DDB_T_SQLNULL}
 import std.time.duration.{Timestamp, Duration}
 import std.time.civil.{Date}
 import std.identifiers.uuid.{Uuid}
@@ -53,29 +55,29 @@ export type LogicalType enum
 /// shim and this file are versioned together, but a mismatch should refuse a
 /// column rather than take down a process.
 export fn logical_type_of(code int) -> LogicalType {
-    if code == ffi.DDB_T_BOOLEAN { return LogicalType.Boolean }
-    if code == ffi.DDB_T_TINYINT { return LogicalType.TinyInt }
-    if code == ffi.DDB_T_SMALLINT { return LogicalType.SmallInt }
-    if code == ffi.DDB_T_INTEGER { return LogicalType.Integer }
-    if code == ffi.DDB_T_BIGINT { return LogicalType.BigInt }
-    if code == ffi.DDB_T_UTINYINT { return LogicalType.UTinyInt }
-    if code == ffi.DDB_T_USMALLINT { return LogicalType.USmallInt }
-    if code == ffi.DDB_T_UINTEGER { return LogicalType.UInteger }
-    if code == ffi.DDB_T_UBIGINT { return LogicalType.UBigInt }
-    if code == ffi.DDB_T_HUGEINT { return LogicalType.HugeInt }
-    if code == ffi.DDB_T_FLOAT { return LogicalType.Float }
-    if code == ffi.DDB_T_DOUBLE { return LogicalType.Double }
-    if code == ffi.DDB_T_DECIMAL { return LogicalType.Decimal }
-    if code == ffi.DDB_T_VARCHAR { return LogicalType.Varchar }
-    if code == ffi.DDB_T_BLOB { return LogicalType.Blob }
-    if code == ffi.DDB_T_TIMESTAMP { return LogicalType.Timestamp }
-    if code == ffi.DDB_T_TIMESTAMPTZ { return LogicalType.TimestampTz }
-    if code == ffi.DDB_T_DATE { return LogicalType.Date }
-    if code == ffi.DDB_T_TIME { return LogicalType.Time }
-    if code == ffi.DDB_T_INTERVAL { return LogicalType.Interval }
-    if code == ffi.DDB_T_ENUM { return LogicalType.Enum }
-    if code == ffi.DDB_T_UUID { return LogicalType.Uuid }
-    if code == ffi.DDB_T_SQLNULL { return LogicalType.SqlNull }
+    if code == DDB_T_BOOLEAN { return LogicalType.Boolean }
+    if code == DDB_T_TINYINT { return LogicalType.TinyInt }
+    if code == DDB_T_SMALLINT { return LogicalType.SmallInt }
+    if code == DDB_T_INTEGER { return LogicalType.Integer }
+    if code == DDB_T_BIGINT { return LogicalType.BigInt }
+    if code == DDB_T_UTINYINT { return LogicalType.UTinyInt }
+    if code == DDB_T_USMALLINT { return LogicalType.USmallInt }
+    if code == DDB_T_UINTEGER { return LogicalType.UInteger }
+    if code == DDB_T_UBIGINT { return LogicalType.UBigInt }
+    if code == DDB_T_HUGEINT { return LogicalType.HugeInt }
+    if code == DDB_T_FLOAT { return LogicalType.Float }
+    if code == DDB_T_DOUBLE { return LogicalType.Double }
+    if code == DDB_T_DECIMAL { return LogicalType.Decimal }
+    if code == DDB_T_VARCHAR { return LogicalType.Varchar }
+    if code == DDB_T_BLOB { return LogicalType.Blob }
+    if code == DDB_T_TIMESTAMP { return LogicalType.Timestamp }
+    if code == DDB_T_TIMESTAMPTZ { return LogicalType.TimestampTz }
+    if code == DDB_T_DATE { return LogicalType.Date }
+    if code == DDB_T_TIME { return LogicalType.Time }
+    if code == DDB_T_INTERVAL { return LogicalType.Interval }
+    if code == DDB_T_ENUM { return LogicalType.Enum }
+    if code == DDB_T_UUID { return LogicalType.Uuid }
+    if code == DDB_T_SQLNULL { return LogicalType.SqlNull }
     LogicalType.Unsupported
 }
 

@@ -58,6 +58,40 @@ export const DDB_E_APPEND = 5
 export const DDB_E_TYPE = 6
 export const DDB_E_CLOSED = 7
 
+
+// Column-type codes, mirroring the `DDBC_T_*` macros of `native/duckdb_shim.h`.
+//
+// THESE WERE MISSING UNTIL 2026-09-08 and `types.nv` referenced twenty-three of
+// them through `ffi.DDB_T_...` -- with `nova check` green the whole time. A
+// module-qualified constant reference is accepted by the checker whether or not the
+// constant exists, and compiles to a member access on a nonexistent C variable
+// (isolated in claude-limits `probes/check-accepts-missing-module-member/`). Import
+// them BY NAME and use them bare; that is the form that works.
+export const DDB_T_UNSUPPORTED = 0
+export const DDB_T_BOOLEAN = 1
+export const DDB_T_TINYINT = 2
+export const DDB_T_SMALLINT = 3
+export const DDB_T_INTEGER = 4
+export const DDB_T_BIGINT = 5
+export const DDB_T_UTINYINT = 6
+export const DDB_T_USMALLINT = 7
+export const DDB_T_UINTEGER = 8
+export const DDB_T_UBIGINT = 9
+export const DDB_T_HUGEINT = 10
+export const DDB_T_FLOAT = 11
+export const DDB_T_DOUBLE = 12
+export const DDB_T_DECIMAL = 13
+export const DDB_T_VARCHAR = 14
+export const DDB_T_BLOB = 15
+export const DDB_T_TIMESTAMP = 16
+export const DDB_T_TIMESTAMPTZ = 17
+export const DDB_T_DATE = 18
+export const DDB_T_TIME = 19
+export const DDB_T_INTERVAL = 20
+export const DDB_T_ENUM = 21
+export const DDB_T_UUID = 22
+export const DDB_T_SQLNULL = 23
+
 // Which handle a message belongs to, for `ddb_last_error`.
 export const KIND_DB = 0
 export const KIND_CONN = 1
