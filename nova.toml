@@ -45,6 +45,14 @@ libs = [
   "duckdb_re2", "duckdb_fmt", "duckdb_utf8proc", "duckdb_hyperloglog",
   "duckdb_fastpforlib", "duckdb_skiplistlib", "duckdb_mbedtls", "duckdb_yyjson",
   "duckdb_fsst", "duckdb_zstd", "duckdb_miniz", "duckdb_pg_query",
+  "duckdb_generated_extension_loader",
+  # Windows system libraries, NOT produced by the build. Each was found by the
+  # linker naming a symbol, not by guessing: `rstrtmgr` for RmStartSession and
+  # RmEndSession -- DuckDB asks the Restart Manager WHO holds a locked database file
+  # so its error can name the process -- and the usual companions of a C++ library
+  # here. `scripts/check-libs-manifest.py` knows these are system-supplied and does
+  # not expect them among the built artefacts.
+  "rstrtmgr", "ws2_32", "bcrypt", "advapi32", "ole32", "shell32",
 ]
 # `duckdb_pg_query` added 2026-09-08 from the first real build: it exists in v1.5.5
 # and was not in this list. Exactly the drift 01.4 §8 predicts, and the reason

@@ -31,6 +31,14 @@ MANIFEST = ROOT / "scripts" / "libs-manifest.txt"
 TOML = ROOT / "nova.toml"
 
 
+# Supplied by the operating system, never by the build. Kept here rather than guessed
+# at (say, "anything without a duckdb_ prefix") because a guess would also swallow a
+# real vendored library whose name happens not to match, and that is precisely the
+# drift this checker exists to catch.
+SYSTEM_LIBS = {"rstrtmgr", "ws2_32", "bcrypt", "advapi32", "ole32", "shell32",
+               "kernel32", "user32", "crypt32", "secur32", "wldap32", "normaliz"}
+
+
 def main():
     if not TOML.exists():
         print(f"FAILED: {TOML} does not exist")
@@ -59,22 +67,25 @@ def main():
     text = MANIFEST.read_text(encoding="utf-8-sig")
     built = [l.strip().lstrip("\ufeff") for l in text.splitlines() if l.strip()]
 
-    print(f"declared in nova.toml: {len(declared)}, built per the manifest: {len(built)}")
+    from_build = [x for x in declared if x not in SYSTEM_LIBS]
+    print(f"declared in nova.toml: {len(declared)} "
+          f"({len(declared) - len(from_build)} system-supplied), "
+          f"built per the manifest: {len(built)}")
 
     bad = []
     missing = [x for x in built if x not in declared]
-    extra = [x for x in declared if x not in built]
+    extra = [x for x in from_build if x not in built]
     if missing:
         bad.append(f"produced by the build but NOT in [ffi] libs: {missing} "
                    f"-- the link will not find them")
     if extra:
         bad.append(f"in [ffi] libs but NOT produced: {extra} "
                    f"-- a vendored dependency vanished between DuckDB versions (01.4 sec.8)")
-    if not missing and not extra and declared != built:
+    if not missing and not extra and from_build != built:
         # Same names, different sequence. A static link resolves left to right.
-        first = next(i for i, (a, b) in enumerate(zip(declared, built)) if a != b)
+        first = next(i for i, (a, b) in enumerate(zip(from_build, built)) if a != b)
         bad.append(f"same libraries, DIFFERENT ORDER, first difference at position {first}: "
-                   f"nova.toml has {declared[first]!r}, the manifest has {built[first]!r}. "
+                   f"nova.toml has {from_build[first]!r}, the manifest has {built[first]!r}. "
                    f"Order is dependent-before-dependency and a static link honours it.")
 
     print("LIBS MANIFEST:", "clean" if not bad else "FAILED")

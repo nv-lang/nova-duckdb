@@ -68,6 +68,29 @@
 #pragma comment(lib, "shell32")
 #endif
 
+/* STATIC LINKAGE, and it must be said BEFORE duckdb.h is read anywhere.
+ *
+ * duckdb.h picks `DUCKDB_C_API` by macro: empty when DUCKDB_STATIC_BUILD is defined,
+ * `__declspec(dllimport)` when it is not. We link `duckdb_static.lib`, so without
+ * this every call compiles expecting an import thunk that a static archive has no
+ * reason to contain, and the linker says so:
+ *
+ *     undefined symbol: __declspec(dllimport) duckdb_open
+ *     NOTE: ... available in duckdb_static.lib but cannot be used because it is not
+ *           an import library.
+ *
+ * Here rather than on a command line because this header is force-included into
+ * every translation unit that calls a `ddb_*` extern -- which is why `[ffi] c_shims`
+ * lists it. A `-D` reaches one compilation; this reaches all of them.
+ *
+ * Found 2026-09-08 at the first real link. `nova check` was green all day and the
+ * shim had compiled cleanly against the real duckdb.h an hour earlier: neither step
+ * asks where a symbol will come from.
+ */
+#ifndef DUCKDB_STATIC_BUILD
+#define DUCKDB_STATIC_BUILD 1
+#endif
+
 #include <stdint.h>
 
 #ifdef __cplusplus
