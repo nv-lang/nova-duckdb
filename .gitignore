@@ -1,0 +1,10 @@
+# Build output of scripts/build-duckdb.* - tens of megabytes of static archives,
+# rebuilt from the pinned submodule tag. Never committed.
+native/lib/
+native/build/
+target/
+*.exe
+*.obj
+*.o
+# Generated C beside the sources, as in every Nova package here.
+src/*.c

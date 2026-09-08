@@ -1,0 +1,128 @@
+// ffi.nv — the only layer that talks C. Module-private, nothing exported.
+//
+// Source: subplan 01.4 §3 of claude-limits; shape copied from nova-tls's own
+// `src/ffi.nv`, which is the package in this family that already got this right.
+//
+// ── Why one layer, and why it is private ────────────────────────────────────
+//
+// Every `extern "C" fn` in the package lives here and nowhere else. A second file
+// declaring one would be a second place where a signature can drift from
+// `native/duckdb_shim.h`, and a drifted signature is not a compile error — it is a
+// pointer read at the wrong width. Nothing here is `export`ed: the facade in
+// `duckdb.nv` is the whole public surface, so a consumer cannot hold a raw handle.
+//
+// ── Handles ─────────────────────────────────────────────────────────────────
+//
+// Newtypes over `*()`, as the FFI cookbook has them: codegen lowers each to its
+// own C typedef, so the ABI is unchanged while Nova refuses to pass a connection
+// where a statement belongs. The `consume` discipline lives one layer up, on the
+// facade types — here a handle is just an opaque number.
+
+module duckdb.ffi
+
+/// An open database.
+export type CDbHandle *()
+/// A connection to one database.
+export type CConnHandle *()
+/// A materialised query result.
+export type CResultHandle *()
+/// A prepared statement.
+export type CStmtHandle *()
+/// An open appender.
+export type CAppHandle *()
+
+// ── error codes, mirroring duckdb_shim.h ─────────────────────────────────────
+//
+// Kept as constants rather than an enum: they cross the C boundary as `int`, and
+// an enum here would invite a `match` that has to handle a value C could invent.
+
+export const DDB_OK = 0
+export const DDB_E_OPEN = 1
+export const DDB_E_QUERY = 2
+export const DDB_E_PREPARE = 3
+export const DDB_E_BIND = 4
+export const DDB_E_APPEND = 5
+export const DDB_E_TYPE = 6
+export const DDB_E_CLOSED = 7
+
+// Which handle a message belongs to, for `ddb_last_error`.
+export const KIND_DB = 0
+export const KIND_CONN = 1
+export const KIND_RESULT = 2
+export const KIND_STMT = 3
+export const KIND_APPENDER = 4
+
+// ── database and connection ──────────────────────────────────────────────────
+
+extern "C" fn ddb_open(path *u8, path_len int, temp_dir *u8, temp_dir_len int, memory_limit *u8, memory_limit_len int, threads int, read_only int, encryption_key *u8, encryption_key_len int, out_db *CDbHandle) -> int
+extern "C" fn ddb_connect(db CDbHandle, out_conn *CConnHandle) -> int
+extern "C" fn ddb_disconnect(conn CConnHandle) -> ()
+extern "C" fn ddb_close(db CDbHandle) -> ()
+extern "C" fn ddb_version() -> *u8
+
+extern "C" fn ddb_last_error(handle *(), kind int, out_len *int) -> *u8
+
+// ── queries ──────────────────────────────────────────────────────────────────
+
+extern "C" fn ddb_exec(conn CConnHandle, sql *u8, sql_len int, out_changed *i64) -> int
+extern "C" fn ddb_query(conn CConnHandle, sql *u8, sql_len int, out_result *CResultHandle) -> int
+extern "C" fn ddb_result_free(result CResultHandle) -> ()
+extern "C" fn ddb_result_rows(result CResultHandle) -> i64
+extern "C" fn ddb_result_cols(result CResultHandle) -> i64
+extern "C" fn ddb_result_col_name(result CResultHandle, col i64, out_len *int) -> *u8
+extern "C" fn ddb_result_col_type(result CResultHandle, col i64) -> int
+
+// ── reading one value ────────────────────────────────────────────────────────
+
+extern "C" fn ddb_value_is_null(result CResultHandle, row i64, col i64) -> int
+extern "C" fn ddb_value_bool(result CResultHandle, row i64, col i64, out *int) -> int
+extern "C" fn ddb_value_i64(result CResultHandle, row i64, col i64, out *i64) -> int
+extern "C" fn ddb_value_u64(result CResultHandle, row i64, col i64, out *u64) -> int
+extern "C" fn ddb_value_f64(result CResultHandle, row i64, col i64, out *f64) -> int
+extern "C" fn ddb_value_hugeint(result CResultHandle, row i64, col i64, out_hi *i64, out_lo *u64) -> int
+extern "C" fn ddb_value_decimal(result CResultHandle, row i64, col i64, out_hi *i64, out_lo *u64, out_scale *int) -> int
+extern "C" fn ddb_value_timestamp(result CResultHandle, row i64, col i64, out_us *i64) -> int
+extern "C" fn ddb_value_date(result CResultHandle, row i64, col i64, out_days *i32) -> int
+extern "C" fn ddb_value_time(result CResultHandle, row i64, col i64, out_us *i64) -> int
+extern "C" fn ddb_value_interval(result CResultHandle, row i64, col i64, out_months *i32, out_days *i32, out_us *i64) -> int
+extern "C" fn ddb_value_uuid(result CResultHandle, row i64, col i64, out16 *u8) -> int
+extern "C" fn ddb_value_bytes(result CResultHandle, row i64, col i64, out_len *int) -> *u8
+
+// ── prepared statements ──────────────────────────────────────────────────────
+
+extern "C" fn ddb_prepare(conn CConnHandle, sql *u8, sql_len int, out_stmt *CStmtHandle) -> int
+extern "C" fn ddb_stmt_free(stmt CStmtHandle) -> ()
+extern "C" fn ddb_stmt_param_count(stmt CStmtHandle) -> i64
+extern "C" fn ddb_stmt_execute(stmt CStmtHandle, out_result *CResultHandle) -> int
+extern "C" fn ddb_stmt_clear(stmt CStmtHandle) -> int
+
+extern "C" fn ddb_bind_null(stmt CStmtHandle, i i64) -> int
+extern "C" fn ddb_bind_bool(stmt CStmtHandle, i i64, v int) -> int
+extern "C" fn ddb_bind_i64(stmt CStmtHandle, i i64, v i64) -> int
+extern "C" fn ddb_bind_u64(stmt CStmtHandle, i i64, v u64) -> int
+extern "C" fn ddb_bind_f64(stmt CStmtHandle, i i64, v f64) -> int
+extern "C" fn ddb_bind_hugeint(stmt CStmtHandle, i i64, hi i64, lo u64) -> int
+extern "C" fn ddb_bind_decimal(stmt CStmtHandle, i i64, hi i64, lo u64, scale int) -> int
+extern "C" fn ddb_bind_timestamp(stmt CStmtHandle, i i64, us i64) -> int
+extern "C" fn ddb_bind_date(stmt CStmtHandle, i i64, days i32) -> int
+extern "C" fn ddb_bind_time(stmt CStmtHandle, i i64, us i64) -> int
+extern "C" fn ddb_bind_uuid(stmt CStmtHandle, i i64, b16 *u8) -> int
+extern "C" fn ddb_bind_bytes(stmt CStmtHandle, i i64, p *u8, len int, is_blob int) -> int
+
+// ── appender ─────────────────────────────────────────────────────────────────
+
+extern "C" fn ddb_appender_create(conn CConnHandle, schema *u8, schema_len int, table *u8, table_len int, out_app *CAppHandle) -> int
+extern "C" fn ddb_append_null(app CAppHandle) -> int
+extern "C" fn ddb_append_bool(app CAppHandle, v int) -> int
+extern "C" fn ddb_append_i64(app CAppHandle, v i64) -> int
+extern "C" fn ddb_append_u64(app CAppHandle, v u64) -> int
+extern "C" fn ddb_append_f64(app CAppHandle, v f64) -> int
+extern "C" fn ddb_append_hugeint(app CAppHandle, hi i64, lo u64) -> int
+extern "C" fn ddb_append_timestamp(app CAppHandle, us i64) -> int
+extern "C" fn ddb_append_date(app CAppHandle, days i32) -> int
+extern "C" fn ddb_append_time(app CAppHandle, us i64) -> int
+extern "C" fn ddb_append_uuid(app CAppHandle, b16 *u8) -> int
+extern "C" fn ddb_append_bytes(app CAppHandle, p *u8, len int, is_blob int) -> int
+extern "C" fn ddb_append_end_row(app CAppHandle) -> int
+extern "C" fn ddb_appender_flush(app CAppHandle) -> int
+extern "C" fn ddb_appender_close(app CAppHandle) -> int

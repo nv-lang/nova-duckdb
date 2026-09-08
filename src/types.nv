@@ -1,0 +1,185 @@
+// types.nv — what a DuckDB column is, in Nova's terms.
+//
+// Source: subplan 01.4 §5 (the mapping table) and §4 (`Value`, `Decimal`).
+//
+// ── Two conversions that must live in exactly one place ─────────────────────
+//
+// DuckDB counts time in MICROSECONDS; Nova's `Timestamp` and `Duration` count
+// NANOSECONDS. The factor is exactly 1000 and it divides evenly in the direction
+// that matters (a microsecond is a whole number of nanoseconds), so nothing is
+// lost going in. Coming back out, a `Timestamp` whose nanos are not a multiple of
+// 1000 cannot be stored faithfully, and this file says so with `Type` rather than
+// truncating — a silently dropped nanosecond is a value that reads back different
+// from what was written.
+//
+// A 128-bit integer crosses the C boundary as two halves (§3): the ABI for
+// `__int128` is not something to rely on across clang-cl, clang and gcc. The
+// halves are reassembled here and nowhere else.
+
+module duckdb.types
+
+import duckdb.ffi
+import std.time.duration.{Timestamp, Duration}
+import std.time.civil.{Date}
+import std.identifiers.uuid.{Uuid}
+
+/// The logical type of a column, as the shim reports it.
+///
+/// Mirrors the `DDB_T_*` codes of `native/duckdb_shim.h`, which are the SHIM's own
+/// codes rather than DuckDB's enum — see that header for why. `Unsupported` is not
+/// an error: it is `LIST`, `STRUCT`, `MAP`, `ARRAY`, `UNION` or `BIT`, which 0.1
+/// does not read (§4.1), and the facade turns it into `DuckError.Type` naming the
+/// column.
+export type LogicalType enum
+    | Unsupported
+    | Boolean
+    | TinyInt | SmallInt | Integer | BigInt
+    | UTinyInt | USmallInt | UInteger | UBigInt
+    | HugeInt
+    | Float | Double
+    | Decimal
+    | Varchar
+    | Blob
+    | Timestamp
+    | TimestampTz
+    | Date
+    | Time
+    | Interval
+    | Enum
+    | Uuid
+    | SqlNull
+
+/// Translate a shim code. An unknown number is `Unsupported`, not a panic: the
+/// shim and this file are versioned together, but a mismatch should refuse a
+/// column rather than take down a process.
+export fn logical_type_of(code int) -> LogicalType {
+    if code == ffi.DDB_T_BOOLEAN { return LogicalType.Boolean }
+    if code == ffi.DDB_T_TINYINT { return LogicalType.TinyInt }
+    if code == ffi.DDB_T_SMALLINT { return LogicalType.SmallInt }
+    if code == ffi.DDB_T_INTEGER { return LogicalType.Integer }
+    if code == ffi.DDB_T_BIGINT { return LogicalType.BigInt }
+    if code == ffi.DDB_T_UTINYINT { return LogicalType.UTinyInt }
+    if code == ffi.DDB_T_USMALLINT { return LogicalType.USmallInt }
+    if code == ffi.DDB_T_UINTEGER { return LogicalType.UInteger }
+    if code == ffi.DDB_T_UBIGINT { return LogicalType.UBigInt }
+    if code == ffi.DDB_T_HUGEINT { return LogicalType.HugeInt }
+    if code == ffi.DDB_T_FLOAT { return LogicalType.Float }
+    if code == ffi.DDB_T_DOUBLE { return LogicalType.Double }
+    if code == ffi.DDB_T_DECIMAL { return LogicalType.Decimal }
+    if code == ffi.DDB_T_VARCHAR { return LogicalType.Varchar }
+    if code == ffi.DDB_T_BLOB { return LogicalType.Blob }
+    if code == ffi.DDB_T_TIMESTAMP { return LogicalType.Timestamp }
+    if code == ffi.DDB_T_TIMESTAMPTZ { return LogicalType.TimestampTz }
+    if code == ffi.DDB_T_DATE { return LogicalType.Date }
+    if code == ffi.DDB_T_TIME { return LogicalType.Time }
+    if code == ffi.DDB_T_INTERVAL { return LogicalType.Interval }
+    if code == ffi.DDB_T_ENUM { return LogicalType.Enum }
+    if code == ffi.DDB_T_UUID { return LogicalType.Uuid }
+    if code == ffi.DDB_T_SQLNULL { return LogicalType.SqlNull }
+    LogicalType.Unsupported
+}
+
+/// The SQL spelling, for error messages and for tests that compare against
+/// `information_schema`.
+export fn LogicalType @to_str() -> str {
+    match @ {
+        LogicalType.Unsupported => "UNSUPPORTED"
+        LogicalType.Boolean => "BOOLEAN"
+        LogicalType.TinyInt => "TINYINT"
+        LogicalType.SmallInt => "SMALLINT"
+        LogicalType.Integer => "INTEGER"
+        LogicalType.BigInt => "BIGINT"
+        LogicalType.UTinyInt => "UTINYINT"
+        LogicalType.USmallInt => "USMALLINT"
+        LogicalType.UInteger => "UINTEGER"
+        LogicalType.UBigInt => "UBIGINT"
+        LogicalType.HugeInt => "HUGEINT"
+        LogicalType.Float => "FLOAT"
+        LogicalType.Double => "DOUBLE"
+        LogicalType.Decimal => "DECIMAL"
+        LogicalType.Varchar => "VARCHAR"
+        LogicalType.Blob => "BLOB"
+        LogicalType.Timestamp => "TIMESTAMP"
+        LogicalType.TimestampTz => "TIMESTAMPTZ"
+        LogicalType.Date => "DATE"
+        LogicalType.Time => "TIME"
+        LogicalType.Interval => "INTERVAL"
+        LogicalType.Enum => "ENUM"
+        LogicalType.Uuid => "UUID"
+        LogicalType.SqlNull => "NULL"
+    }
+}
+
+// ── decimal ──────────────────────────────────────────────────────────────────
+
+/// An exact decimal: `unscaled` divided by ten to the `scale`.
+///
+/// NEVER FOLDED INTO `f64`, not even for display (§4). A percentage stored as
+/// `DECIMAL(5,2)` is an exact number that a person compares against a threshold;
+/// turning it into a float to print it is how 74.00 becomes 73.999999. The
+/// application decides what to do with it.
+export type DecimalValue value {
+    /// The 128-bit mantissa, as the two halves the C boundary carries.
+    hi i64
+    lo u64
+    scale int
+}
+
+export fn DecimalValue.of(hi i64, lo u64, scale int) -> DecimalValue => { hi, lo, scale }
+
+/// Is this value representable as an `i64` after scaling away? Used by callers
+/// that know their column is small; the halves stay available regardless.
+export fn DecimalValue @fits_i64() -> bool => @hi == 0 || @hi == 0 - 1
+
+// ── time ─────────────────────────────────────────────────────────────────────
+
+/// DuckDB microseconds -> Nova `Timestamp`. Exact in this direction.
+export fn timestamp_of_micros(us i64) -> Timestamp => (us * 1000).to_unix_nanos()
+
+/// Nova `Timestamp` -> DuckDB microseconds.
+///
+/// `None` when the instant carries sub-microsecond precision. Refusing is the
+/// point: DuckDB cannot store it, and a truncated write reads back as a different
+/// instant than the one the caller handed over.
+export fn micros_of_timestamp(t Timestamp) -> Option[i64] {
+    ro n = t.unix_nanos()
+    if n % 1000 != 0 { return None }
+    Some(n / 1000)
+}
+
+/// Days since the Unix epoch -> Nova `Date`.
+export fn date_of_epoch_days(days i32) -> Date => Date.from_epoch_day(days as i64)
+
+/// DuckDB `TIME` (microseconds since midnight) -> `Duration`.
+export fn time_of_micros(us i64) -> Duration => (us * 1000).to_nanos()
+
+// ── one value ────────────────────────────────────────────────────────────────
+
+/// A single column value, read out of a row.
+///
+/// A sum rather than a bag of accessors returning `Option`: a caller that matches
+/// on this has handled every shape the database can hand back, and a new shape
+/// added later breaks the match instead of falling through a default.
+export type Value enum
+    | Null
+    | Bool(bool)
+    | Int(i64)
+    | UInt(u64)
+    | Huge(i64, u64)
+    | Real(f64)
+    | Dec(DecimalValue)
+    | Text(str)
+    | Bytes([]u8)
+    | Instant(Timestamp)
+    | Day(Date)
+    | TimeOfDay(Duration)
+    | Span(Duration)
+    | Ident(Uuid)
+
+/// Is this the SQL `NULL`? Asked often enough to be worth naming.
+export fn Value @is_null() -> bool {
+    match @ {
+        Value.Null => true
+        _ => false
+    }
+}
