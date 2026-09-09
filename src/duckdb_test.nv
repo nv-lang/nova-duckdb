@@ -123,13 +123,19 @@ test "a time zone conversion works, which means icu is linked" {
     }
 }
 
-test "INSTALL is refused, because autoloading is off at the connection" {
-    // The setting the shim applies in `ddb_open` and that no Nova code can undo.
-    with Fail[DuckError] = |e| { assert(true) } {
+test "INSTALL is refused, because extension loading is off at compile time" {
+    // Measured 2026-09-08: the two `SET autoinstall/autoload ... = false` the shim
+    // applies govern only the AUTOMATIC path. An explicit INSTALL walks straight past
+    // them -- it fetched 22 MB over plain http:// and loaded it into the process. The
+    // refusal now comes from -DDISABLE_EXTENSION_LOAD, a build flag no SQL can undo.
+    // probes/duckdb-install-reaches-network/FINDING.md in claude-limits has the trace.
+    mut refusal = ""
+    with Fail[DuckError] = |e| { refusal = e.message() } {
         ro _ = with_db(fn(con Connection) -> int => con.exec("INSTALL json"))
-        // Reaching here means the install was accepted, which is the failure.
-        assert(false)
     }
+    // Not `refusal != ""`: any error at all would satisfy that, including one from
+    // opening the database, and the test would pass while measuring nothing.
+    assert(refusal.contains("disabled through a compile time flag"))
 }
 
 // ── strictness on the way in ────────────────────────────────────────────────
@@ -138,7 +144,7 @@ test "a string into a TIMESTAMP is refused" {
     mut refused = false
     with Fail[DuckError] = |e| { refused = true } {
         ro _ = with_db(fn(con Connection) -> int {
-            ro _ = con.exec("CREATE TABLE t (at TIMESTAMP)")
+            ro _ = con.exec("CREATE TABLE t (ts TIMESTAMP)")
             con.exec("INSERT INTO t VALUES ('not a time')")
         })
     }
@@ -161,13 +167,13 @@ test "200 into a TINYINT is refused" {
 test "a timestamp survives the round trip to the microsecond" {
     with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
         ro got = with_db(fn(con Connection) -> i64 {
-            ro _ = con.exec("CREATE TABLE t (at TIMESTAMP)")
+            ro _ = con.exec("CREATE TABLE t (ts TIMESTAMP)")
             consume st = con.prepare("INSERT INTO t VALUES (?)")
             defer { st.finalize() }
             st.bind([Value.Instant(timestamp_of_micros(1757347622000000))])
             consume r = st.execute()
             r.close()
-            consume q = con.query("SELECT epoch_us(at) FROM t")
+            consume q = con.query("SELECT epoch_us(ts) FROM t")
             defer { q.close() }
             match q.value(0, 0) {
                 Value.Int(n) => n

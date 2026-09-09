@@ -101,19 +101,43 @@ function NeedCmdVia($vcvars, $name) {
   ($found | Select-Object -First 1)
 }
 
+# The cmake flags are defined HERE, above the cache stamp, because the stamp is
+# keyed on them: a key computed before its inputs exist is a key of nothing.
+$cmakeArgs = @(
+  "-S", $submodule, "-B", $build, "-G", "Ninja",
+  "-DCMAKE_BUILD_TYPE=Release",
+  "-DBUILD_EXTENSIONS=core_functions;icu",
+  "-DENABLE_EXTENSION_AUTOLOADING=0",
+  "-DENABLE_EXTENSION_AUTOINSTALL=0",
+  "-DDISABLE_EXTENSION_LOAD=TRUE",
+  "-DBUILD_SHELL=0", "-DBUILD_UNITTESTS=0", "-DBUILD_BENCHMARKS=0",
+  "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+) -join " "
+
 # ── the cache stamp ──────────────────────────────────────────────────────────
 #
 # Keyed on what can change the output: the submodule commit, the flags, and the
 # compiler version. Anything else -- the clock, the working directory, who ran it --
 # is deliberately NOT in the key, because a cache that misses for those reasons is
 # a cache that costs forty minutes for nothing.
+#
+# Correction 2026-09-08. This comment was true and the code was not. The key was built
+# from $expected (the list of expected LIBRARIES) plus three strings retyped by hand,
+# so the actual cmake flags were never in it. Adding -DDISABLE_EXTENSION_LOAD -- a flag
+# that changes every object file -- printed "cache hit, nothing to build", and the old
+# library would have been accepted as the new one. A cache that answers for inputs it
+# does not read is worse than no cache: it is silent, fast, and wrong.
+#
+# The key now hashes $cmakeArgs itself -- the same string handed to cmake, not a copy
+# of it. A copy is exactly what broke this.
 
 function CacheKey {
   $commit = (& git -C $submodule rev-parse HEAD 2>$null)
   if (-not $commit) { $commit = "no-submodule" }
   $clang = (& "$Llvm\clang-cl.exe" --version 2>$null | Select-Object -First 1)
-  $flags = ($expected -join ",") + "|core_functions;icu|MultiThreaded|Release"
-  $text = "$commit|$clang|$flags"
+  # $cmakeArgs, not a hand-written echo of it. $expected stays in the key as well: it
+  # names the archives the build must produce, and changing that list changes the output.
+  $text = "$commit|$clang|$cmakeArgs|" + ($expected -join ",")
   $sha = [System.Security.Cryptography.SHA256]::Create()
   ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)) | ForEach-Object { $_.ToString("x2") }) -join ""
 }
@@ -147,15 +171,6 @@ New-Item -ItemType Directory -Force -Path $lib | Out-Null
 # well as at connection time -- two locks on the same door, because the failure they
 # prevent is a twenty-two second hang against the network.
 
-$cmakeArgs = @(
-  "-S", $submodule, "-B", $build, "-G", "Ninja",
-  "-DCMAKE_BUILD_TYPE=Release",
-  "-DBUILD_EXTENSIONS=core_functions;icu",
-  "-DENABLE_EXTENSION_AUTOLOADING=0",
-  "-DENABLE_EXTENSION_AUTOINSTALL=0",
-  "-DBUILD_SHELL=0", "-DBUILD_UNITTESTS=0", "-DBUILD_BENCHMARKS=0",
-  "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
-) -join " "
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
 "configure..."
