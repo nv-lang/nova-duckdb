@@ -53,16 +53,45 @@ need_cmd() {
 need_cmd cmake
 need_cmd ninja
 
+# ── the cmake flags, defined ONCE ────────────────────────────────────────────
+#
+# Above the cache stamp on purpose: the stamp is keyed on these, and a key computed
+# before its inputs exist is a key of nothing.
+cmake_args=(
+  -S "$submodule" -B "$build" -G Ninja
+  -DCMAKE_BUILD_TYPE=Release
+  -DBUILD_EXTENSIONS="core_functions;icu"
+  -DENABLE_EXTENSION_AUTOLOADING=0
+  -DENABLE_EXTENSION_AUTOINSTALL=0
+  -DDISABLE_EXTENSION_LOAD=TRUE
+  -DBUILD_SHELL=0 -DBUILD_UNITTESTS=0 -DBUILD_BENCHMARKS=0
+)
+
+# Every cmake target the link needs. `duckdb_static` alone is NOT enough: the
+# generated extension loader pulls in the extensions whether or not they were
+# asked for, and a build without them fails at link on symbols nobody requested.
+# Measured on Windows 2026-09-08; this script had only duckdb_static and would
+# have produced a library that cannot be linked.
+targets=(duckdb_static core_functions_extension icu_extension parquet_extension
+         duckdb_generated_extension_loader)
+
 # ── the cache stamp ──────────────────────────────────────────────────────────
 #
 # Keyed on the submodule commit, the flags and the compiler version — the three
 # things that change the output. Nothing else, because a cache that misses for an
 # irrelevant reason costs forty minutes.
+#
+# Correction 2026-09-08, same defect as the Windows twin carried: the key was built
+# from `expected` (the list of expected LIBRARIES) plus three strings retyped by
+# hand, so the actual cmake flags were never in it. Adding -DDISABLE_EXTENSION_LOAD
+# would have printed "cache hit, nothing to build" and handed the old library over
+# as the new one. The key now hashes "${cmake_args[@]}" itself -- the thing passed
+# to cmake, not a copy of it. A copy is what broke this.
 cc="${CXX:-clang++}"
 commit="$(git -C "$submodule" rev-parse HEAD 2>/dev/null || echo no-submodule)"
 ccver="$("$cc" --version 2>/dev/null | head -1 || echo unknown)"
-flags="$(IFS=,; echo "${expected[*]}")|core_functions;icu|Release"
-key="$(printf '%s|%s|%s' "$commit" "$ccver" "$flags" | sha256sum | cut -d' ' -f1)"
+key="$(printf '%s|%s|%s|%s' "$commit" "$ccver" "${cmake_args[*]}" \
+       "$(IFS=,; echo "${expected[*]}")" | sha256sum | cut -d' ' -f1)"
 
 if [ "${FORCE:-0}" != "1" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$key" ]; then
   echo "cache hit ($key) - nothing to build. FORCE=1 to rebuild."
@@ -72,16 +101,11 @@ fi
 mkdir -p "$lib"
 
 echo "configure..."
-cmake -S "$submodule" -B "$build" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_EXTENSIONS="core_functions;icu" \
-  -DENABLE_EXTENSION_AUTOLOADING=0 \
-  -DENABLE_EXTENSION_AUTOINSTALL=0 \
-  -DBUILD_SHELL=0 -DBUILD_UNITTESTS=0 -DBUILD_BENCHMARKS=0
+cmake "${cmake_args[@]}"
 
 echo "build (expect 40-60 min on 16 cores with a cold cache)..."
 start=$(date +%s)
-cmake --build "$build" --target duckdb_static -j
+cmake --build "$build" --target "${targets[@]}" -j
 echo "built in $((($(date +%s) - start) / 60)) min"
 
 # ── collect and check ───────────────────────────────────────────────────────

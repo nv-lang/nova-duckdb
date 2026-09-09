@@ -1,0 +1,177 @@
+# The gate every sibling package has (plan 275 F.4) and this one did not.
+#
+# WHY IT EXISTS. A mechanism only the person who remembers it can start is not a
+# mechanism. Two things here are remembered rather than checked otherwise:
+# that a release tag stands over a manifest declaring the same version, and that
+# the package resolves through its lock rather than through a local override.
+# nova-polaris carried v0.1.4 over a manifest saying 0.1.3 until the check existed.
+#
+# WHAT IS DIFFERENT HERE. This package has a native dependency: DuckDB, built from
+# a pinned submodule. Nothing can be tested until that library exists, so this gate
+# builds it. The first run is long -- tens of minutes -- and the cache makes every
+# run after it cheap. The alternative, skipping the tests when the library is
+# absent, is the failure mode this repository has spent a day finding in other
+# forms: a green that measures nothing. So a missing library FAILS here.
+#
+# THE OVERRIDE IS THE POINT. nova.override.toml is gitignored and never reaches CI,
+# so resolution goes through the lock and the manifests -- precisely the combination
+# no local run exercises.
+name: pkg-gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    name: guards + duckdb + nova test src
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout this package
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          path: pkg
+
+      # Full history: the compiler build reads its own git metadata, and the
+      # runtime submodule is mandatory (plan 22 F2 aborts without libuv).
+      - name: Checkout nova (compiler + runtime + std)
+        uses: actions/checkout@v4
+        with:
+          repository: nv-lang/nova
+          submodules: recursive
+          fetch-depth: 0
+          path: nova
+
+      - name: Setup Rust toolchain (pinned to nova's MSRV)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+
+      - name: Install system deps (docs/guide/linux-build.md recipe, plus ninja)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build make libgc-dev libuv1-dev build-essential
+
+      - name: Cache cargo registry + nova-cli target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nova/nova-cli/target
+          key: ${{ runner.os }}-pkggate-${{ hashFiles('nova/nova-cli/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pkggate-
+
+      # Keyed on the submodule commit AND the build script: a change to either
+      # changes the library. The script's own cache stamp keys on the cmake flags,
+      # which is the same reasoning one level down.
+      - name: Cache the built DuckDB
+        uses: actions/cache@v4
+        with:
+          path: pkg/native/lib
+          key: ${{ runner.os }}-duckdb-${{ hashFiles('pkg/native/duckdb/.git', 'pkg/scripts/build-duckdb.sh') }}
+
+      - name: Build nova
+        working-directory: nova/nova-cli
+        run: cargo build --release
+
+      - name: Build DuckDB (long on a cold cache, minutes on a warm one)
+        working-directory: pkg
+        run: ./scripts/build-duckdb.sh
+
+      # The library must be there. Absent means the build failed quietly, and a
+      # skipped test suite would report that as success.
+      - name: The libraries exist and match the manifest
+        working-directory: pkg
+        run: |
+          set -uo pipefail
+          n=$(ls native/lib/*.a 2>/dev/null | wc -l)
+          echo "archives in native/lib: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::no libraries were produced — the tests below would have measured nothing"
+            exit 1
+          fi
+          python3 scripts/check-libs-manifest.py
+
+      # Every guard this repository ships, not a list to keep in step with.
+      - name: Guards of this repository
+        working-directory: pkg
+        run: |
+          set -uo pipefail
+          n=0; rc=0
+          for g in scripts/guards/check-*.sh; do
+            [ -e "$g" ] || continue
+            n=$((n+1))
+            echo "::group::$g"
+            bash "$g" . || { echo "::error::guard failed: $g"; rc=1; }
+            echo "::endgroup::"
+          done
+          echo "guards run: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::warning::this repository ships no guards"
+          fi
+          exit $rc
+
+      - name: Tag and manifest agree
+        working-directory: pkg
+        run: |
+          set -uo pipefail
+          ver=$(grep -m1 '^version[[:space:]]*=' nova.toml | sed 's/.*"\(.*\)".*/\1/')
+          tag=$(git tag --points-at HEAD | grep -E '^v[0-9]' | head -1 || true)
+          if [ -z "$tag" ]; then
+            echo "no release tag on this commit — nothing to compare (manifest says $ver)"
+            exit 0
+          fi
+          if [ "$tag" != "v$ver" ]; then
+            echo "::error::tag $tag stands over a manifest declaring $ver"
+            exit 1
+          fi
+          echo "tag $tag matches manifest $ver"
+
+      - name: nova test src
+        working-directory: pkg
+        env:
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+        run: |
+          test ! -f nova.override.toml || { echo "::error::nova.override.toml reached CI — it must stay gitignored"; exit 1; }
+          "${GITHUB_WORKSPACE}/nova/nova-cli/target/release/nova" test src
+
+      # The suite reports PASS on a FILE. Reading that as "the tests passed" is how
+      # an empty measurement passes for a full one -- it happened in this very
+      # package. Assert the count the binary itself prints.
+      - name: The suite actually ran its tests
+        working-directory: pkg
+        env:
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+        run: |
+          set -uo pipefail
+          "${GITHUB_WORKSPACE}/nova/nova-cli/target/release/nova" build src/duckdb_test.nv
+          bin=./duckdb_test
+          [ -x "$bin" ] || bin=./duckdb_test.exe
+          [ -x "$bin" ] || { echo "::error::the test binary was not produced"; exit 1; }
+          out=$("$bin" 2>&1); rc=$?
+          echo "$out" | tail -3
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the test binary exited $rc"
+            exit 1
+          fi
+          line=$(echo "$out" | grep -oE '^[0-9]+/[0-9]+ passed$' | tail -1)
+          if [ -z "$line" ]; then
+            echo "::error::the suite printed no 'N/N passed' line — it may not have run"
+            exit 1
+          fi
+          ran=${line%%/*}
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::the suite ran zero tests"
+            exit 1
+          fi
+          echo "the suite ran $line"
