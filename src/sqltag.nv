@@ -58,30 +58,37 @@ export fn values_of(args []SqlValue) -> []Value {
 /// The statement is finalised before returning, including on the way out through a
 /// failure — a prepared statement left behind on an error path is a leak that only
 /// shows up under load, which is where it is hardest to find.
-export fn Connection @run(q Sql) Fail[DuckError] -> QueryResult {
-    // `consume` at the binding (D180) and `defer` for the cleanup (D162): the
-    // compiler asked for both, and it was right to -- the doc line above promises
-    // the statement is finalised "including on the way out through a failure", and
-    // `defer` is the only spelling that actually keeps that promise.
+export fn Connection @run(q Sql) -> Result[QueryResult, DuckError] {
+    // CONSUME-SCOPE, not `consume` + `defer { st.finalize() }`.
+    //
+    // This comment used to say defer was "the only spelling that actually keeps
+    // that promise". It was wrong, and wrong in a way that corrupted the heap: a
+    // bare `consume X = e` already gets auto-@cleanup (D432), Statement's cleanup
+    // IS finalize(), so the defer called it a SECOND time. ddb_stmt_free is not
+    // idempotent -- 0xC0000374, process dead. Measured 2026-09-08, both ways, in
+    // claude-limits probes/duckdb-prepare-heap-corruption.
+    //
+    // The scope form keeps the promise the doc line above makes -- the statement is
+    // finalised on every way out, failure included -- and frees exactly once.
     //
     // The result is NOT bound to a name: it is the return value, and binding it
     // would oblige this function to cover its error path too, for an object the
     // CALLER owns. Handing it back straight from `execute()` says that plainly.
-    consume st = @prepare(q.template)
-    defer { st.finalize() }
-    st.bind(values_of(q.args))
-    st.execute()
+    consume st = @prepare(q.template)? {
+        st.bind(values_of(q.args))?
+        return st.execute()
+    }
 }
 
 /// The same for a statement with nothing to return: rows changed.
 ///
 /// Here the result IS owned by this function, so it is bound and deferred -- the
 /// difference between the two bodies is exactly the difference in who owns what.
-export fn Connection @run_exec(q Sql) Fail[DuckError] -> int {
-    consume st = @prepare(q.template)
-    defer { st.finalize() }
-    st.bind(values_of(q.args))
-    consume r = st.execute()
-    defer { r.close() }
-    r.rows()
+export fn Connection @run_exec(q Sql) -> Result[int, DuckError] {
+    consume st = @prepare(q.template)? {
+        st.bind(values_of(q.args))?
+        consume r = st.execute()? {
+            return Ok(r.rows())
+        }
+    }
 }

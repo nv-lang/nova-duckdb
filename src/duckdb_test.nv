@@ -62,29 +62,35 @@ fn with_db[T](body fn(Connection) Fail[DuckError] -> T) Fail[DuckError] -> T {
     // `return` from inside the block: the scope form is a STATEMENT, not an
     // expression, and the compiler says so plainly -- cleanup still runs on the way
     // out through the return.
-    consume db = Database.open_memory(DbOptions.defaults()) {
-        consume con = db.connect() {
+    consume db = Database.open_memory(DbOptions.defaults())!! {
+        consume con = db.connect()!! {
             return body(con)
         }
     }
 }
 
 fn one_int(con Connection, sql str) Fail[DuckError] -> i64 {
-    consume r = con.query(sql)
-    defer { r.close() }
-    match r.value(0, 0) {
+    // Scope form, not `consume` + `defer { r.close() }`: QueryResult declares
+    // @cleanup, so the defer would be a second free (D432; see the file banner).
+    consume r = con.query(sql)!!
+    ro v = match r.value(0, 0)!! {
         Value.Int(n) => n
         _ => throw DuckError.Type("expected an integer in the first cell")
     }
+    r.close()
+    v
 }
 
 fn one_text(con Connection, sql str) Fail[DuckError] -> str {
-    consume r = con.query(sql)
-    defer { r.close() }
-    match r.value(0, 0) {
+    // Scope form, not `consume` + `defer { r.close() }`: QueryResult declares
+    // @cleanup, so the defer would be a second free (D432; see the file banner).
+    consume r = con.query(sql)!!
+    ro v = match r.value(0, 0)!! {
         Value.Text(s) => s
         _ => throw DuckError.Type("expected text in the first cell")
     }
+    r.close()
+    v
 }
 
 // ── it opens, it answers, it closes ─────────────────────────────────────────
@@ -148,7 +154,7 @@ test "INSTALL is refused, because extension loading is off at compile time" {
     // probes/duckdb-install-reaches-network/FINDING.md in claude-limits has the trace.
     mut refusal = ""
     with Fail[DuckError] = |e| { refusal = e.message() } {
-        ro _ = with_db(fn(con Connection) -> int => con.exec("INSTALL json"))
+        ro _ = with_db(fn(con Connection) -> int => con.exec("INSTALL json")!!)
     }
     // Not `refusal != ""`: any error at all would satisfy that, including one from
     // opening the database, and the test would pass while measuring nothing.
@@ -161,8 +167,8 @@ test "a string into a TIMESTAMP is refused" {
     mut refused = false
     with Fail[DuckError] = |e| { refused = true } {
         ro _ = with_db(fn(con Connection) -> int {
-            ro _ = con.exec("CREATE TABLE t (ts TIMESTAMP)")
-            con.exec("INSERT INTO t VALUES ('not a time')")
+            ro _ = con.exec("CREATE TABLE t (ts TIMESTAMP)")!!
+            con.exec("INSERT INTO t VALUES ('not a time')")!!
         })
     }
     assert(refused)
@@ -172,8 +178,8 @@ test "200 into a TINYINT is refused" {
     mut refused = false
     with Fail[DuckError] = |e| { refused = true } {
         ro _ = with_db(fn(con Connection) -> int {
-            ro _ = con.exec("CREATE TABLE t (p TINYINT)")
-            con.exec("INSERT INTO t VALUES (200)")
+            ro _ = con.exec("CREATE TABLE t (p TINYINT)")!!
+            con.exec("INSERT INTO t VALUES (200)")!!
         })
     }
     assert(refused)
@@ -184,20 +190,21 @@ test "200 into a TINYINT is refused" {
 test "a timestamp survives the round trip to the microsecond" {
     with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
         ro got = with_db(fn(con Connection) -> i64 {
-            ro _ = con.exec("CREATE TABLE t (ts TIMESTAMP)")
-            consume st = con.prepare("INSERT INTO t VALUES (?)")
+            ro _ = con.exec("CREATE TABLE t (ts TIMESTAMP)")!!
+            consume st = con.prepare("INSERT INTO t VALUES (?)")!!
             // No `defer { st.finalize() }`: a bare consume binding already gets
             // auto-@cleanup (D432), and Statement's cleanup IS finalize(). The defer
             // made it a double free and killed the process with 0xC0000374.
-            st.bind([Value.Instant(timestamp_of_micros(1757347622000000))])
-            consume r = st.execute()
+            st.bind([Value.Instant(timestamp_of_micros(1757347622000000))])!!
+            consume r = st.execute()!!
             r.close()
-            consume q = con.query("SELECT epoch_us(ts) FROM t")
-            defer { q.close() }
-            match q.value(0, 0) {
+            consume q = con.query("SELECT epoch_us(ts) FROM t")!!
+            ro v = match q.value(0, 0)!! {
                 Value.Int(n) => n
                 _ => throw DuckError.Type("expected an integer")
             }
+            q.close()
+            v
         })
         assert(got == 1757347622000000)
     }
@@ -216,8 +223,8 @@ test "an instant finer than a microsecond is refused, not truncated" {
 test "a DECIMAL keeps every digit" {
     with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
         ro s = with_db(fn(con Connection) -> str {
-            ro _ = con.exec("CREATE TABLE t (v DECIMAL(18,3))")
-            ro _ = con.exec("INSERT INTO t VALUES (74.125)")
+            ro _ = con.exec("CREATE TABLE t (v DECIMAL(18,3))")!!
+            ro _ = con.exec("INSERT INTO t VALUES (74.125)")!!
             one_text(con, "SELECT CAST(v AS VARCHAR) FROM t")
         })
         // Read as text so the assertion cannot be satisfied by a float that happens
@@ -229,14 +236,15 @@ test "a DECIMAL keeps every digit" {
 test "a DECIMAL read as a value is exact halves and a scale, never a float" {
     with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
         ro d = with_db(fn(con Connection) -> DecimalValue {
-            ro _ = con.exec("CREATE TABLE t (v DECIMAL(18,3))")
-            ro _ = con.exec("INSERT INTO t VALUES (74.125)")
-            consume q = con.query("SELECT v FROM t")
-            defer { q.close() }
-            match q.value(0, 0) {
+            ro _ = con.exec("CREATE TABLE t (v DECIMAL(18,3))")!!
+            ro _ = con.exec("INSERT INTO t VALUES (74.125)")!!
+            consume q = con.query("SELECT v FROM t")!!
+            ro d = match q.value(0, 0)!! {
                 Value.Dec(x) => x
                 _ => throw DuckError.Type("expected a decimal")
             }
+            q.close()
+            d
         })
         assert(d.scale == 3)
         assert(d.lo == 74125)
@@ -247,11 +255,12 @@ test "a DECIMAL read as a value is exact halves and a scale, never a float" {
 test "a NULL is a NULL and not a zero" {
     with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
         ro isnull = with_db(fn(con Connection) -> bool {
-            ro _ = con.exec("CREATE TABLE t (v INTEGER)")
-            ro _ = con.exec("INSERT INTO t VALUES (NULL)")
-            consume q = con.query("SELECT v FROM t")
-            defer { q.close() }
-            q.value(0, 0).is_null()
+            ro _ = con.exec("CREATE TABLE t (v INTEGER)")!!
+            ro _ = con.exec("INSERT INTO t VALUES (NULL)")!!
+            consume q = con.query("SELECT v FROM t")!!
+            ro n = q.value(0, 0)!!.is_null()
+            q.close()
+            n
         })
         assert(isnull)
     }
@@ -260,9 +269,10 @@ test "a NULL is a NULL and not a zero" {
 test "the columns of a result carry their names and types" {
     with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
         ro c = with_db(fn(con Connection) -> Column {
-            consume q = con.query("SELECT 1 AS n")
-            defer { q.close() }
-            q.column(0)
+            consume q = con.query("SELECT 1 AS n")!!
+            ro c0 = q.column(0)
+            q.close()
+            c0
         })
         assert(c.name == "n")
         assert(c.kind.to_str() == "INTEGER")
@@ -276,11 +286,11 @@ test "a parameter cannot become part of the statement" {
     // like SQL is a value.
     with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
         ro n = with_db(fn(con Connection) -> i64 {
-            ro _ = con.exec("CREATE TABLE t (name VARCHAR)")
-            consume st = con.prepare("INSERT INTO t VALUES (?)")
+            ro _ = con.exec("CREATE TABLE t (name VARCHAR)")!!
+            consume st = con.prepare("INSERT INTO t VALUES (?)")!!
             // No defer: auto-@cleanup already finalizes (see above).
-            st.bind([Value.Text("x'); DROP TABLE t; --")])
-            consume r = st.execute()
+            st.bind([Value.Text("x'); DROP TABLE t; --")!!])
+            consume r = st.execute()!!
             r.close()
             one_int(con, "SELECT count(*) FROM t")
         })
@@ -294,10 +304,10 @@ test "binding the wrong number of parameters is refused before anything runs" {
     mut refused = false
     with Fail[DuckError] = |e| { refused = true } {
         ro _ = with_db(fn(con Connection) -> int {
-            ro _ = con.exec("CREATE TABLE t (a INTEGER, b INTEGER)")
-            consume st = con.prepare("INSERT INTO t VALUES (?, ?)")
+            ro _ = con.exec("CREATE TABLE t (a INTEGER, b INTEGER)")!!
+            consume st = con.prepare("INSERT INTO t VALUES (?, ?)")!!
             // No defer: auto-@cleanup already finalizes (see above).
-            st.bind([Value.Int(1)])
+            st.bind([Value.Int(1)])!!
             0
         })
     }
@@ -309,16 +319,16 @@ test "binding the wrong number of parameters is refused before anything runs" {
 test "the appender writes and a flush makes the rows visible" {
     with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
         ro n = with_db(fn(con Connection) -> i64 {
-            ro _ = con.exec("CREATE TABLE t (a INTEGER, b VARCHAR)")
-            consume app = con.appender("", "t")
+            ro _ = con.exec("CREATE TABLE t (a INTEGER, b VARCHAR)")!!
+            consume app = con.appender("", "t")!!
             mut i = 0
             while i < 1000 {
-                app.row([Value.Int(i as i64), Value.Text("row")])
+                app.row([Value.Int(i as i64), Value.Text("row")])!!
                 i += 1
             }
-            app.flush()
+            app.flush()!!
             ro seen = one_int(con, "SELECT count(*) FROM t")
-            app.close()
+            app.close()!!
             seen
         })
         assert(n == 1000)
@@ -328,13 +338,13 @@ test "the appender writes and a flush makes the rows visible" {
 test "a rollback takes the appended rows with it" {
     with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
         ro n = with_db(fn(con Connection) -> i64 {
-            ro _ = con.exec("CREATE TABLE t (a INTEGER)")
-            con.begin()
-            consume app = con.appender("", "t")
-            app.row([Value.Int(1)])
-            app.flush()
-            app.close()
-            con.rollback()
+            ro _ = con.exec("CREATE TABLE t (a INTEGER)")!!
+            con.begin()!!
+            consume app = con.appender("", "t")!!
+            app.row([Value.Int(1)])!!
+            app.flush()!!
+            app.close()!!
+            con.rollback()!!
             one_int(con, "SELECT count(*) FROM t")
         })
         assert(n == 0)
@@ -344,10 +354,10 @@ test "a rollback takes the appended rows with it" {
 test "a commit keeps them" {
     with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
         ro n = with_db(fn(con Connection) -> i64 {
-            ro _ = con.exec("CREATE TABLE t (a INTEGER)")
-            con.begin()
-            ro _ = con.exec("INSERT INTO t VALUES (7)")
-            con.commit()
+            ro _ = con.exec("CREATE TABLE t (a INTEGER)")!!
+            con.begin()!!
+            ro _ = con.exec("INSERT INTO t VALUES (7)")!!
+            con.commit()!!
             one_int(con, "SELECT count(*) FROM t")
         })
         assert(n == 1)
@@ -362,9 +372,9 @@ test "a LIST column is refused by name, not read as something else" {
     mut refused = false
     with Fail[DuckError] = |e| { refused = true } {
         ro _ = with_db(fn(con Connection) -> bool {
-            consume q = con.query("SELECT [1, 2, 3] AS xs")
-            defer { q.close() }
-            ro _ = q.value(0, 0)
+            consume q = con.query("SELECT [1, 2, 3] AS xs")!!
+            ro _ = q.value(0, 0)!!
+            q.close()
             true
         })
     }

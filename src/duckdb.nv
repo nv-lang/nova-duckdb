@@ -19,7 +19,7 @@
 //
 // ── Failure ─────────────────────────────────────────────────────────────────
 //
-// Every fallible call carries `Fail[DuckError]` and throws. The message comes from
+// Every fallible call returns `Result[T, DuckError]`. The message comes from
 // DuckDB itself, copied out immediately — the pointer it hands back dies on the
 // next call against the same handle.
 
@@ -146,7 +146,7 @@ fn error_of(code int, handle *(), kind int) -> DuckError {
 // ── database ─────────────────────────────────────────────────────────────────
 
 /// Open a database file, or `":memory:"`.
-export fn Database.open(path str, opts DbOptions) Fail[DuckError] -> Database {
+export fn Database.open(path str, opts DbOptions) -> Result[Database, DuckError] {
     ro pb = path.bytes()
     ro tb = opts.temp_dir.bytes()
     ro mb = opts.memory_limit.bytes()
@@ -154,19 +154,19 @@ export fn Database.open(path str, opts DbOptions) Fail[DuckError] -> Database {
     mut err = 0
     ro ro_flag = if opts.read_only { 1 } else { 0 }
     ro h = unsafe { ffi.ddb_open(pb.ptr(), pb.len(), tb.ptr(), tb.len(), mb.ptr(), mb.len(), opts.threads, ro_flag, kb.ptr(), kb.len(), &err) }
-    if err != DDB_OK { throw DuckError.Open(message_of(h as *(), KIND_DB)) }
-    { h }
+    if err != DDB_OK { return Err(DuckError.Open(message_of(h as *(), KIND_DB))) }
+    Ok({ h })
 }
 
 /// An in-memory database. Everything the tests use, and nothing on disk.
-export fn Database.open_memory(opts DbOptions) Fail[DuckError] -> Database =>
+export fn Database.open_memory(opts DbOptions) -> Result[Database, DuckError] =>
     Database.open(":memory:", opts)
 
-export fn Database @connect() Fail[DuckError] -> Connection {
+export fn Database @connect() -> Result[Connection, DuckError] {
     mut err = 0
     ro c = unsafe { ffi.ddb_connect(@h, &err) }
-    if err != DDB_OK { throw error_of(err, @h as *(), KIND_DB) }
-    { h: c }
+    if err != DDB_OK { return Err(error_of(err, @h as *(), KIND_DB)) }
+    Ok({ h: c })
 }
 
 export fn Database consume @close() -> () {
@@ -200,33 +200,36 @@ export fn Database.extensions() -> []str => ["core_functions", "icu"]
 // ── connection ───────────────────────────────────────────────────────────────
 
 /// Run a statement and report rows changed.
-export fn Connection @exec(sql str) Fail[DuckError] -> int {
+export fn Connection @exec(sql str) -> Result[int, DuckError] {
     ro b = sql.bytes()
     mut changed i64 = 0
     ro rc = unsafe { ffi.ddb_exec(@h, b.ptr(), b.len(), &changed) }
-    if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_CONN) }
-    changed as int
+    if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_CONN)) }
+    Ok(changed as int)
 }
 
 /// Run a query and materialise the result.
-export fn Connection @query(sql str) Fail[DuckError] -> QueryResult {
+export fn Connection @query(sql str) -> Result[QueryResult, DuckError] {
     ro b = sql.bytes()
     mut err = 0
     ro r = unsafe { ffi.ddb_query(@h, b.ptr(), b.len(), &err) }
-    if err != DDB_OK { throw error_of(err, @h as *(), KIND_CONN) }
-    { h: r }
+    if err != DDB_OK { return Err(error_of(err, @h as *(), KIND_CONN)) }
+    Ok({ h: r })
 }
 
-export fn Connection @begin() Fail[DuckError] -> () {
-    ro _ = @exec("BEGIN TRANSACTION")
+export fn Connection @begin() -> Result[(), DuckError] {
+    ro _ = @exec("BEGIN TRANSACTION")?
+    Ok(())
 }
 
-export fn Connection @commit() Fail[DuckError] -> () {
-    ro _ = @exec("COMMIT")
+export fn Connection @commit() -> Result[(), DuckError] {
+    ro _ = @exec("COMMIT")?
+    Ok(())
 }
 
-export fn Connection @rollback() Fail[DuckError] -> () {
-    ro _ = @exec("ROLLBACK")
+export fn Connection @rollback() -> Result[(), DuckError] {
+    ro _ = @exec("ROLLBACK")?
+    Ok(())
 }
 
 export fn Connection consume @close() -> () {
@@ -268,40 +271,40 @@ export fn QueryResult @is_null(row int, col int) -> bool =>
 /// `VARCHAR` column is a mistake this design cannot express. A caller that knows
 /// its schema matches on the result; one that does not can look at `@column(i)`
 /// first.
-export fn QueryResult @value(row int, col int) Fail[DuckError] -> Value {
-    if @is_null(row, col) { return Value.Null }
+export fn QueryResult @value(row int, col int) -> Result[Value, DuckError] {
+    if @is_null(row, col) { return Ok(Value.Null) }
     ro r = row as i64
     ro c = col as i64
-    match @column(col).kind {
+    Ok(match @column(col).kind {
         LogicalType.Boolean => {
             mut v = 0
             ro rc = unsafe { ffi.ddb_value_bool(@h, r, c, &v) }
-            if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_RESULT) }
+            if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_RESULT)) }
             Value.Bool(v != 0)
         }
-        LogicalType.TinyInt => Value.Int(@read_i64(r, c))
-        LogicalType.SmallInt => Value.Int(@read_i64(r, c))
-        LogicalType.Integer => Value.Int(@read_i64(r, c))
-        LogicalType.BigInt => Value.Int(@read_i64(r, c))
-        LogicalType.UTinyInt => Value.UInt(@read_u64(r, c))
-        LogicalType.USmallInt => Value.UInt(@read_u64(r, c))
-        LogicalType.UInteger => Value.UInt(@read_u64(r, c))
-        LogicalType.UBigInt => Value.UInt(@read_u64(r, c))
+        LogicalType.TinyInt => Value.Int(@read_i64(r, c)?)
+        LogicalType.SmallInt => Value.Int(@read_i64(r, c)?)
+        LogicalType.Integer => Value.Int(@read_i64(r, c)?)
+        LogicalType.BigInt => Value.Int(@read_i64(r, c)?)
+        LogicalType.UTinyInt => Value.UInt(@read_u64(r, c)?)
+        LogicalType.USmallInt => Value.UInt(@read_u64(r, c)?)
+        LogicalType.UInteger => Value.UInt(@read_u64(r, c)?)
+        LogicalType.UBigInt => Value.UInt(@read_u64(r, c)?)
         LogicalType.HugeInt => {
             mut hi i64 = 0
             mut lo u64 = 0
             ro rc = unsafe { ffi.ddb_value_hugeint(@h, r, c, &hi, &lo) }
-            if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_RESULT) }
+            if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_RESULT)) }
             Value.Huge(hi, lo)
         }
-        LogicalType.Float => Value.Real(@read_f64(r, c))
-        LogicalType.Double => Value.Real(@read_f64(r, c))
+        LogicalType.Float => Value.Real(@read_f64(r, c)?)
+        LogicalType.Double => Value.Real(@read_f64(r, c)?)
         LogicalType.Decimal => {
             mut hi i64 = 0
             mut lo u64 = 0
             mut scale = 0
             ro rc = unsafe { ffi.ddb_value_decimal(@h, r, c, &hi, &lo, &scale) }
-            if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_RESULT) }
+            if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_RESULT)) }
             Value.Dec(DecimalValue.of(hi, lo, scale))
         }
         LogicalType.Varchar => Value.Text(@read_text(r, c))
@@ -313,18 +316,18 @@ export fn QueryResult @value(row int, col int) Fail[DuckError] -> Value {
             ro p = unsafe { ffi.ddb_value_blob(@h, r, c, &len) }
             Value.Bytes(bytes_of_raw(p, len))
         }
-        LogicalType.Timestamp => Value.Instant(timestamp_of_micros(@read_micros(r, c)))
-        LogicalType.TimestampTz => Value.Instant(timestamp_of_micros(@read_micros(r, c)))
+        LogicalType.Timestamp => Value.Instant(timestamp_of_micros(@read_micros(r, c)?))
+        LogicalType.TimestampTz => Value.Instant(timestamp_of_micros(@read_micros(r, c)?))
         LogicalType.Date => {
             mut d i32 = 0
             ro rc = unsafe { ffi.ddb_value_date(@h, r, c, &d) }
-            if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_RESULT) }
+            if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_RESULT)) }
             Value.Day(date_of_epoch_days(d))
         }
         LogicalType.Time => {
             mut us i64 = 0
             ro rc = unsafe { ffi.ddb_value_time(@h, r, c, &us) }
-            if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_RESULT) }
+            if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_RESULT)) }
             Value.TimeOfDay(time_of_micros(us))
         }
         LogicalType.Interval => {
@@ -332,45 +335,45 @@ export fn QueryResult @value(row int, col int) Fail[DuckError] -> Value {
             mut days i32 = 0
             mut us i64 = 0
             ro rc = unsafe { ffi.ddb_value_interval(@h, r, c, &months, &days, &us) }
-            if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_RESULT) }
+            if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_RESULT)) }
             // Months are refused rather than approximated: a month is not a fixed
             // number of days, so folding one into a `Duration` moves a date by up
             // to three days depending on when it is applied.
-            if months != 0 { throw DuckError.Type("column ${col} is an INTERVAL carrying months, which Duration cannot hold") }
+            if months != 0 { return Err(DuckError.Type("column ${col} is an INTERVAL carrying months, which Duration cannot hold")) }
             Value.Span(time_of_micros(us + (days as i64) * 86_400_000_000))
         }
-        LogicalType.Uuid => throw DuckError.Type("column ${col}: UUID reading arrives with stage S1")
+        LogicalType.Uuid => return Err(DuckError.Type("column ${col}: UUID reading arrives with stage S1"))
         LogicalType.SqlNull => Value.Null
-        LogicalType.Unsupported => throw DuckError.Type("column ${col} has a type this binding does not read (LIST, STRUCT, MAP, ARRAY, UNION or BIT); see the package README")
-    }
+        LogicalType.Unsupported => return Err(DuckError.Type("column ${col} has a type this binding does not read (LIST, STRUCT, MAP, ARRAY, UNION or BIT); see the package README"))
+    })
 }
 
-fn QueryResult @read_i64(r i64, c i64) Fail[DuckError] -> i64 {
+fn QueryResult @read_i64(r i64, c i64) -> Result[i64, DuckError] {
     mut v i64 = 0
     ro rc = unsafe { ffi.ddb_value_i64(@h, r, c, &v) }
-    if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_RESULT) }
-    v
+    if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_RESULT)) }
+    Ok(v)
 }
 
-fn QueryResult @read_u64(r i64, c i64) Fail[DuckError] -> u64 {
+fn QueryResult @read_u64(r i64, c i64) -> Result[u64, DuckError] {
     mut v u64 = 0
     ro rc = unsafe { ffi.ddb_value_u64(@h, r, c, &v) }
-    if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_RESULT) }
-    v
+    if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_RESULT)) }
+    Ok(v)
 }
 
-fn QueryResult @read_f64(r i64, c i64) Fail[DuckError] -> f64 {
+fn QueryResult @read_f64(r i64, c i64) -> Result[f64, DuckError] {
     mut v = 0.0
     ro rc = unsafe { ffi.ddb_value_f64(@h, r, c, &v) }
-    if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_RESULT) }
-    v
+    if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_RESULT)) }
+    Ok(v)
 }
 
-fn QueryResult @read_micros(r i64, c i64) Fail[DuckError] -> i64 {
+fn QueryResult @read_micros(r i64, c i64) -> Result[i64, DuckError] {
     mut v i64 = 0
     ro rc = unsafe { ffi.ddb_value_timestamp(@h, r, c, &v) }
-    if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_RESULT) }
-    v
+    if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_RESULT)) }
+    Ok(v)
 }
 
 fn QueryResult @read_text(r i64, c i64) -> str {
@@ -397,12 +400,12 @@ export type Statement consume { ro h ffi.CStmtHandle }
 
 /// Prepare a statement. Placeholders are `?`, numbered from one, as DuckDB counts
 /// them.
-export fn Connection @prepare(text str) Fail[DuckError] -> Statement {
+export fn Connection @prepare(text str) -> Result[Statement, DuckError] {
     ro b = text.bytes()
     mut err = 0
     ro st = unsafe { ffi.ddb_prepare(@h, b.ptr(), b.len(), &err) }
-    if err != DDB_OK { throw error_of(err, @h as *(), KIND_CONN) }
-    { h: st }
+    if err != DDB_OK { return Err(error_of(err, @h as *(), KIND_CONN)) }
+    Ok({ h: st })
 }
 
 /// How many placeholders this statement has. A caller binding a list can compare
@@ -415,19 +418,20 @@ export fn Statement @param_count() -> int => ffi.ddb_stmt_param_count(@h) as int
 /// parameter as NULL, so a list one short does not fail — it silently writes a NULL
 /// into a column that was supposed to get a value. That is the kind of defect that
 /// shows up as a hole in a chart three weeks later.
-export fn Statement @bind(args []Value) Fail[DuckError] -> () {
+export fn Statement @bind(args []Value) -> Result[(), DuckError] {
     ro want = @param_count()
     if args.len() != want {
-        throw DuckError.Bind("statement takes ${want} parameters, ${args.len()} given")
+        return Err(DuckError.Bind("statement takes ${want} parameters, ${args.len()} given"))
     }
     mut i = 1
     for v in args {
-        @bind_one(i as i64, v)
+        @bind_one(i as i64, v)?
         i += 1
     }
+    Ok(())
 }
 
-fn Statement @bind_one(i i64, v Value) Fail[DuckError] -> () {
+fn Statement @bind_one(i i64, v Value) -> Result[(), DuckError] {
     ro rc = match v {
         Value.Null => ffi.ddb_bind_null(@h, i)
         Value.Bool(b) => ffi.ddb_bind_bool(@h, i, if b { 1 } else { 0 })
@@ -438,13 +442,14 @@ fn Statement @bind_one(i i64, v Value) Fail[DuckError] -> () {
         Value.Dec(d) => ffi.ddb_bind_decimal(@h, i, d.hi, d.lo, d.scale)
         Value.Text(t) => bind_bytes_of(@h, i, t.bytes(), 0)
         Value.Bytes(b) => bind_bytes_of(@h, i, b, 1)
-        Value.Instant(t) => bind_instant(@h, i, t)
+        Value.Instant(t) => bind_instant(@h, i, t)?
         Value.Day(d) => ffi.ddb_bind_date(@h, i, d.epoch_day() as i32)
         Value.TimeOfDay(d) => ffi.ddb_bind_time(@h, i, d.micros())
         Value.Span(d) => ffi.ddb_bind_time(@h, i, d.micros())
         Value.Ident(u) => bind_uuid(@h, i, u)
     }
-    if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_STMT) }
+    if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_STMT)) }
+    Ok(())
 }
 
 // Hoisted so the `match` arms above stay single expressions: a match in statement
@@ -454,10 +459,10 @@ fn Statement @bind_one(i i64, v Value) Fail[DuckError] -> () {
 fn bind_bytes_of(h ffi.CStmtHandle, i i64, b []u8, is_blob int) -> int =>
     unsafe { ffi.ddb_bind_bytes(h, i, b.ptr(), b.len(), is_blob) }
 
-fn bind_instant(h ffi.CStmtHandle, i i64, t Timestamp) Fail[DuckError] -> int {
+fn bind_instant(h ffi.CStmtHandle, i i64, t Timestamp) -> Result[int, DuckError] {
     match micros_of_timestamp(t) {
-        Some(us) => ffi.ddb_bind_timestamp(h, i, us)
-        None => throw DuckError.Type("a Timestamp with sub-microsecond precision cannot be stored: DuckDB counts microseconds")
+        Some(us) => Ok(ffi.ddb_bind_timestamp(h, i, us))
+        None => Err(DuckError.Type("a Timestamp with sub-microsecond precision cannot be stored: DuckDB counts microseconds"))
     }
 }
 
@@ -485,18 +490,19 @@ fn uuid_bytes(u Uuid) -> []u8 {
     out
 }
 
-export fn Statement @execute() Fail[DuckError] -> QueryResult {
+export fn Statement @execute() -> Result[QueryResult, DuckError] {
     mut err = 0
     ro r = unsafe { ffi.ddb_stmt_execute(@h, &err) }
-    if err != DDB_OK { throw error_of(err, @h as *(), KIND_STMT) }
-    { h: r }
+    if err != DDB_OK { return Err(error_of(err, @h as *(), KIND_STMT)) }
+    Ok({ h: r })
 }
 
 /// Forget the bound parameters, keeping the plan. The point of preparing once and
 /// running many times.
-export fn Statement @clear() Fail[DuckError] -> () {
+export fn Statement @clear() -> Result[(), DuckError] {
     ro rc = ffi.ddb_stmt_clear(@h)
-    if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_STMT) }
+    if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_STMT)) }
+    Ok(())
 }
 
 export fn Statement consume @finalize() -> () {
@@ -515,13 +521,13 @@ export fn Statement consume @cleanup(outcome ScopeOutcome) -> () => @finalize()
 export type Appender consume { ro h ffi.CAppHandle }
 
 /// Open an appender on a table. An empty `schema` means the default one.
-export fn Connection @appender(schema str, table str) Fail[DuckError] -> Appender {
+export fn Connection @appender(schema str, table str) -> Result[Appender, DuckError] {
     ro sb = schema.bytes()
     ro tb = table.bytes()
     mut err = 0
     ro a = unsafe { ffi.ddb_appender_create(@h, sb.ptr(), sb.len(), tb.ptr(), tb.len(), &err) }
-    if err != DDB_OK { throw error_of(err, @h as *(), KIND_CONN) }
-    { h: a }
+    if err != DDB_OK { return Err(error_of(err, @h as *(), KIND_CONN)) }
+    Ok({ h: a })
 }
 
 /// Append one row and end it.
@@ -530,45 +536,46 @@ export fn Connection @appender(schema str, table str) Fail[DuckError] -> Appende
 /// appender holds partial row state, and leaving half a row in it makes every
 /// SUBSEQUENT row land in the wrong columns. Failing loudly on a row boundary is
 /// recoverable; failing in the middle is not.
-export fn Appender @row(values []Value) Fail[DuckError] -> () {
+export fn Appender @row(values []Value) -> Result[(), DuckError] {
     mut failure = ""
     for v in values {
-        ro rc = @append_one(v)
+        ro rc = @append_one(v)?
         if rc != DDB_OK && failure == "" { failure = message_of(@h as *(), KIND_APPENDER) }
     }
     ro end_rc = ffi.ddb_append_end_row(@h)
-    if failure != "" { throw DuckError.Append(failure) }
-    if end_rc != DDB_OK { throw error_of(end_rc, @h as *(), KIND_APPENDER) }
+    if failure != "" { return Err(DuckError.Append(failure)) }
+    if end_rc != DDB_OK { return Err(error_of(end_rc, @h as *(), KIND_APPENDER)) }
+    Ok(())
 }
 
-fn Appender @append_one(v Value) Fail[DuckError] -> int {
+fn Appender @append_one(v Value) -> Result[int, DuckError] {
     match v {
-        Value.Null => ffi.ddb_append_null(@h)
-        Value.Bool(b) => ffi.ddb_append_bool(@h, if b { 1 } else { 0 })
-        Value.Int(n) => ffi.ddb_append_i64(@h, n)
-        Value.UInt(n) => ffi.ddb_append_u64(@h, n)
-        Value.Huge(hi, lo) => ffi.ddb_append_hugeint(@h, hi, lo)
-        Value.Real(x) => ffi.ddb_append_f64(@h, x)
+        Value.Null => Ok(ffi.ddb_append_null(@h))
+        Value.Bool(b) => Ok(ffi.ddb_append_bool(@h, if b { 1 } else { 0 }))
+        Value.Int(n) => Ok(ffi.ddb_append_i64(@h, n))
+        Value.UInt(n) => Ok(ffi.ddb_append_u64(@h, n))
+        Value.Huge(hi, lo) => Ok(ffi.ddb_append_hugeint(@h, hi, lo))
+        Value.Real(x) => Ok(ffi.ddb_append_f64(@h, x))
         // DECIMAL has no appender entry point in the C API; the exact value goes in
         // as its unscaled integer, which is what the column stores anyway.
-        Value.Dec(d) => ffi.ddb_append_hugeint(@h, d.hi, d.lo)
-        Value.Text(t) => append_bytes_of(@h, t.bytes(), 0)
-        Value.Bytes(b) => append_bytes_of(@h, b, 1)
+        Value.Dec(d) => Ok(ffi.ddb_append_hugeint(@h, d.hi, d.lo))
+        Value.Text(t) => Ok(append_bytes_of(@h, t.bytes(), 0))
+        Value.Bytes(b) => Ok(append_bytes_of(@h, b, 1))
         Value.Instant(t) => append_instant(@h, t)
-        Value.Day(d) => ffi.ddb_append_date(@h, d.epoch_day() as i32)
-        Value.TimeOfDay(d) => ffi.ddb_append_time(@h, d.micros())
-        Value.Span(d) => ffi.ddb_append_time(@h, d.micros())
-        Value.Ident(u) => append_uuid(@h, u)
+        Value.Day(d) => Ok(ffi.ddb_append_date(@h, d.epoch_day() as i32))
+        Value.TimeOfDay(d) => Ok(ffi.ddb_append_time(@h, d.micros()))
+        Value.Span(d) => Ok(ffi.ddb_append_time(@h, d.micros()))
+        Value.Ident(u) => Ok(append_uuid(@h, u))
     }
 }
 
 fn append_bytes_of(h ffi.CAppHandle, b []u8, is_blob int) -> int =>
     unsafe { ffi.ddb_append_bytes(h, b.ptr(), b.len(), is_blob) }
 
-fn append_instant(h ffi.CAppHandle, t Timestamp) Fail[DuckError] -> int {
+fn append_instant(h ffi.CAppHandle, t Timestamp) -> Result[int, DuckError] {
     match micros_of_timestamp(t) {
-        Some(us) => ffi.ddb_append_timestamp(h, us)
-        None => throw DuckError.Type("a Timestamp with sub-microsecond precision cannot be stored: DuckDB counts microseconds")
+        Some(us) => Ok(ffi.ddb_append_timestamp(h, us))
+        None => Err(DuckError.Type("a Timestamp with sub-microsecond precision cannot be stored: DuckDB counts microseconds"))
     }
 }
 
@@ -579,19 +586,27 @@ fn append_uuid(h ffi.CAppHandle, u Uuid) -> int {
 
 /// Make what has been appended visible to this connection, keeping the appender
 /// open.
-export fn Appender @flush() Fail[DuckError] -> () {
+export fn Appender @flush() -> Result[(), DuckError] {
     ro rc = ffi.ddb_appender_flush(@h)
-    if rc != DDB_OK { throw error_of(rc, @h as *(), KIND_APPENDER) }
+    if rc != DDB_OK { return Err(error_of(rc, @h as *(), KIND_APPENDER)) }
+    Ok(())
 }
 
 /// Flush and destroy. Fallible, because the flush can fail and dropping that on the
 /// floor would lose rows a caller believes are written.
-export fn Appender consume @close() Fail[DuckError] -> () {
+export fn Appender consume @close() -> Result[(), DuckError] {
     ro rc = ffi.ddb_appender_close(@h)
-    if rc != DDB_OK { throw DuckError.Append("closing the appender failed; rows may not have been written") }
+    if rc != DDB_OK { return Err(DuckError.Append("closing the appender failed; rows may not have been written")) }
+    Ok(())
 }
 
 /// The appender's cleanup is the one that CAN fail, and its type says so. A flush
 /// that did not land means rows the caller believes are written are not, and
 /// swallowing that on the way out of a scope turns lost data into silence.
-export fn Appender consume @cleanup(outcome ScopeOutcome) Fail[DuckError] -> () => @close()
+///
+/// THE ONE PLACE `Fail` STAYS, and not by preference: an auto-inserted cleanup has
+/// no caller to hand a `Result` to. `!!` turns the `Err` into a throw, which D432 §1
+/// (2026-08-04 amendment) makes a DIRECT effect of whatever function leaves an
+/// appender unconsumed -- so the failure lands in that function's signature instead
+/// of disappearing. Canonical form, same as `std/fs/fs.nv:326` for `File`.
+export fn Appender consume @cleanup(outcome ScopeOutcome) Fail[DuckError] -> () => @close()!!
