@@ -64,6 +64,12 @@ cmake_args=(
   -DENABLE_EXTENSION_AUTOLOADING=0
   -DENABLE_EXTENSION_AUTOINSTALL=0
   -DDISABLE_EXTENSION_LOAD=TRUE
+  # Linux builds jemalloc as an 18th archive; Windows does not. `[ffi] libs` is ONE
+  # flat list -- the manifest parser has no platform split -- so both platforms must
+  # produce the SAME set. Off rather than added to the list: a library named in
+  # `[ffi] libs` and missing on disk degrades the whole package to SKIP, so adding it
+  # would turn every Windows run green while running nothing.
+  -DENABLE_JEMALLOC=FALSE
   -DBUILD_SHELL=0 -DBUILD_UNITTESTS=0 -DBUILD_BENCHMARKS=0
 )
 

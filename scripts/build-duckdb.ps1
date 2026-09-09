@@ -110,6 +110,17 @@ $cmakeArgs = @(
   "-DENABLE_EXTENSION_AUTOLOADING=0",
   "-DENABLE_EXTENSION_AUTOINSTALL=0",
   "-DDISABLE_EXTENSION_LOAD=TRUE",
+  # Linux builds jemalloc as an 18th archive; Windows does not. `[ffi] libs` is ONE
+  # flat list -- the manifest parser has no platform split (five keys, none of them
+  # conditional) -- so the two platforms must produce the SAME set or the list is
+  # wrong on one of them.
+  #
+  # Off rather than added to the list: a library named in `[ffi] libs` and missing on
+  # disk makes the compiler degrade the whole package to SKIP. Adding duckdb_jemalloc
+  # would therefore turn every Windows run green while running nothing, which is the
+  # exact failure this repository keeps finding. Caught by pkg-gate on the first
+  # Linux build, 2026-09-09.
+  "-DENABLE_JEMALLOC=FALSE",
   "-DBUILD_SHELL=0", "-DBUILD_UNITTESTS=0", "-DBUILD_BENCHMARKS=0",
   "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
 ) -join " "
