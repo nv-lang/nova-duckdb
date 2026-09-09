@@ -115,9 +115,28 @@ The repository is built rather than the amalgamation, and that is the whole reas
 this takes an hour: `core_functions` and `icu` are not in `libduckdb-src.zip`, and
 `date_trunc`, `time_bucket` and `TIMESTAMPTZ` arithmetic live there. With extension
 autoloading on and the extension missing, the first such call goes to the internet
-and hangs for about twenty-two seconds before failing. The shim turns autoloading
-off at the connection and the build turns it off in the library, so that failure
-cannot come back.
+and hangs for about twenty-two seconds before failing.
+
+**How the network is actually kept out, and what was not enough.** The shim sets
+`autoinstall_known_extensions=false` and `autoload_known_extensions=false` at every
+connection, and the build passes the cmake flags that make those the defaults. That
+stops DuckDB going for an extension *by itself* — and it is all it stops. An explicit
+`INSTALL json` is not automatic, it is a direct request, and it ran: measured
+2026-09-08, it fetched 22 MB from `http://extensions.duckdb.org` — over plain HTTP,
+no TLS — and loaded it into the process.
+
+The library is therefore built with `-DDISABLE_EXTENSION_LOAD`, which removes
+installing and dynamic loading at compile time. `INSTALL` now answers
+`Installing external extensions is disabled through a compile time flag`, and no SQL
+can undo a build flag. The statically linked extensions are unaffected: they are
+registered at startup by a different path, and the test that proves `icu` works is
+the control for it.
+
+A test in `src/duckdb_test.nv` asserts that specific refusal message rather than
+merely that some error occurred -- a test satisfied by any error is satisfied by the
+wrong one, which is how two other tests in this file were green while measuring
+nothing. Whether `~/.duckdb` gets created is checked by hand at present, not by the
+suite; the test file's banner claimed otherwise and has been corrected.
 
 Adds about **36 MB** to a binary on each platform.
 

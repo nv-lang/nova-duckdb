@@ -40,8 +40,23 @@
 //
 // `:memory:` for everything. A test that writes a file has to clean it up, races
 // with a parallel run of itself, and passes on the second run for the wrong reason
-// when cleanup failed. The one property that needs a real path — that `~/.duckdb`
-// is never created — is checked by looking at the directory, not by writing there.
+// when cleanup failed.
+//
+// CORRECTION 2026-09-08. This paragraph used to end: "The one property that needs a
+// real path -- that `~/.duckdb` is never created -- is checked by looking at the
+// directory, not by writing there." No such check exists in this file, and none ever
+// did. It was a description of an intention, written in the present tense, and it
+// read exactly like a guarantee.
+//
+// It cost something real. `INSTALL json` fetched 22 MB over plain HTTP into the
+// process that evening, and this sentence is part of why nobody looked: the file
+// said the property was checked. A claim with no mechanism behind it is worse than
+// no claim, because it stops the search that would have found the truth.
+//
+// The directory is inspected BY HAND for now. Writing the check honestly needs a
+// filesystem effect in a test that has deliberately avoided touching disk, so it is
+// a real decision rather than an oversight -- and until it is made, the file says
+// which of the two it is. [M-duckdb-extension-dir-check]
 
 module duckdb.duckdb_test
 
