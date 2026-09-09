@@ -14,3 +14,4 @@ duckdb_zstd
 duckdb_miniz
 duckdb_pg_query
 duckdb_generated_extension_loader
+parquet_extension
