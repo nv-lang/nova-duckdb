@@ -147,8 +147,21 @@ jobs:
           NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
           NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
         run: |
+          set -uo pipefail
           test ! -f nova.override.toml || { echo "::error::nova.override.toml reached CI — it must stay gitignored"; exit 1; }
-          "${GITHUB_WORKSPACE}/nova/nova-cli/target/release/nova" test src
+          out=$("${GITHUB_WORKSPACE}/nova/nova-cli/target/release/nova" test src 2>&1); rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ] && echo "$out" | grep -q "undefined reference to \`operator new\|undefined reference to \`operator delete\|__throw_"; then
+            echo "::error::KNOWN BLOCKER, not a regression: DuckDB is C++ and this"
+            echo "::error::toolchain cannot link a C++ runtime. [ffi] libs is one flat"
+            echo "::error::list with no platform split, and naming stdc++ there would"
+            echo "::error::make Windows degrade the whole package to SKIP. The compiler"
+            echo "::error::has no notion of C++ at all: zero occurrences of cpp/cxx/stdc++"
+            echo "::error::in link_prep.rs, manifest.rs or nova-cli."
+            echo "::error::Windows builds and passes 21/21. Trace and what is needed:"
+            echo "::error::claude-limits probes/ffi-cannot-link-cpp-runtime/FINDING.md"
+          fi
+          exit $rc
 
       # The suite reports PASS on a FILE. Reading that as "the tests passed" is how
       # an empty measurement passes for a full one -- it happened in this very
