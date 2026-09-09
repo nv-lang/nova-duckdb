@@ -3,21 +3,38 @@
 //
 //   ./nova.sh test src
 //
-// ── These tests have NEVER RUN, and here is exactly why ─────────────────────
+// ── These tests ran for the first time on 2026-09-08, and 21/21 pass ──────
+//
+// The banner here used to say they had NEVER RUN. That was true when written and
+// is worth keeping the shape of, because what it took to make them run is the
+// useful part -- three defects stacked behind one another, each invisible until
+// the one in front of it was gone:
+//
+//   1. `[ffi] libs` was a MULTI-LINE TOML array, and the manifest parser returns an
+//      empty vector for those, silently. No library ever reached the linker. Legal
+//      TOML, accepted by the tool, understood differently from how it is written.
+//
+//   2. Behind that: 32 of the 59 ddb_* functions declared in duckdb_shim.h had no
+//      definition in C. The whole prepared-statement and appender surface existed
+//      as a header and as Nova bindings with nothing underneath. Invisible all day
+//      because the link never got far enough to ask.
+//
+//   3. Behind THAT: `defer { st.finalize() }` on a bare consume binding freed
+//      twice. D432 gives such a binding auto-@cleanup, and Statement's cleanup IS
+//      finalize(), so the defer was a second free -- 0xC0000374, heap corruption,
+//      process dead before stdout flushed.
+//
+// Two of the tests were also green while measuring nothing: `at` is a reserved word
+// in DuckDB (AT TIME ZONE), so `CREATE TABLE t (at TIMESTAMP)` failed at parse time
+// and the two "... is refused" tests passed on THAT error, never reaching the
+// statement they name. A test that accepts any error accepts the wrong one.
 //
 // On a checkout without the DuckDB submodule and without `scripts/build-duckdb.*`
-// having run, `nova test src` reports CC-FAIL on this file: the shim is compiled
-// before any library is looked for, and it stops at `duckdb.h: file not found`.
-//
-// The first version of this banner said SKIP, and that was wrong — I had read
-// nova-tls's note about `[ffi] libs` + `lib_dirs` degrading gracefully and
-// generalised it without running anything. The degrade covers missing LIBRARIES,
-// not a missing HEADER. Measured 2026-09-08.
-//
-// So: this file typechecks and has never been executed. Nothing in it is claimed
-// as passing. Writing the acceptance first is still worth it — the first real run
-// then has something to disagree with — but "written" is not "green", and the two
-// must not be reported as the same thing.
+// having run, `nova test src` still reports CC-FAIL on this file: the shim is
+// compiled before any library is looked for, and it stops at `duckdb.h: file not
+// found`. The `[ffi] libs` degrade covers missing LIBRARIES, not a missing HEADER --
+// an earlier version of this note said SKIP, generalising nova-tls's behaviour
+// without running anything.
 //
 // ── Why in-memory ───────────────────────────────────────────────────────────
 //
@@ -169,7 +186,9 @@ test "a timestamp survives the round trip to the microsecond" {
         ro got = with_db(fn(con Connection) -> i64 {
             ro _ = con.exec("CREATE TABLE t (ts TIMESTAMP)")
             consume st = con.prepare("INSERT INTO t VALUES (?)")
-            defer { st.finalize() }
+            // No `defer { st.finalize() }`: a bare consume binding already gets
+            // auto-@cleanup (D432), and Statement's cleanup IS finalize(). The defer
+            // made it a double free and killed the process with 0xC0000374.
             st.bind([Value.Instant(timestamp_of_micros(1757347622000000))])
             consume r = st.execute()
             r.close()
@@ -259,7 +278,7 @@ test "a parameter cannot become part of the statement" {
         ro n = with_db(fn(con Connection) -> i64 {
             ro _ = con.exec("CREATE TABLE t (name VARCHAR)")
             consume st = con.prepare("INSERT INTO t VALUES (?)")
-            defer { st.finalize() }
+            // No defer: auto-@cleanup already finalizes (see above).
             st.bind([Value.Text("x'); DROP TABLE t; --")])
             consume r = st.execute()
             r.close()
@@ -277,7 +296,7 @@ test "binding the wrong number of parameters is refused before anything runs" {
         ro _ = with_db(fn(con Connection) -> int {
             ro _ = con.exec("CREATE TABLE t (a INTEGER, b INTEGER)")
             consume st = con.prepare("INSERT INTO t VALUES (?, ?)")
-            defer { st.finalize() }
+            // No defer: auto-@cleanup already finalizes (see above).
             st.bind([Value.Int(1)])
             0
         })
