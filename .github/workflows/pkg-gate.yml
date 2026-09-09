@@ -106,21 +106,40 @@ jobs:
           python3 scripts/check-libs-manifest.py
 
       # Every guard this repository ships, not a list to keep in step with.
+      #
+      # CORRECTED 2026-09-09: this globbed only `scripts/guards/check-*.sh`, which is
+      # the MAIN repository's layout. This package keeps its checkers in
+      # `scripts/check-*.py`, so the loop matched nothing, printed a warning and
+      # passed -- a step that could not fail, sitting inside the step whose whole
+      # point is not keeping a list. Meanwhile the real checkers were a list: two
+      # named steps above, and a third added the same day would have been called by
+      # nobody.
+      #
+      # check-build-twins.py consequently runs TWICE: once early, where its own
+      # comment argues it belongs (before the build is judged), and once here. A
+      # tenth of a second is a fair price for never maintaining the list again; a
+      # list of exclusions would be the same problem wearing a different hat.
       - name: Guards of this repository
         working-directory: pkg
         run: |
           set -uo pipefail
           n=0; rc=0
-          for g in scripts/guards/check-*.sh; do
+          for g in scripts/guards/check-*.sh scripts/check-*.py; do
             [ -e "$g" ] || continue
             n=$((n+1))
             echo "::group::$g"
-            bash "$g" . || { echo "::error::guard failed: $g"; rc=1; }
+            case "$g" in
+              *.sh) bash "$g" . || { echo "::error::guard failed: $g"; rc=1; } ;;
+              *.py) python3 "$g" || { echo "::error::guard failed: $g"; rc=1; } ;;
+            esac
             echo "::endgroup::"
           done
           echo "guards run: $n"
+          # Zero is an ERROR, not a warning: this package ships checkers, so finding
+          # none means the glob stopped matching, and the step would pass on silence.
           if [ "$n" -eq 0 ]; then
-            echo "::warning::this repository ships no guards"
+            echo "::error::no guards found -- the glob has stopped matching"
+            exit 1
           fi
           exit $rc
 
