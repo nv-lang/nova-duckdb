@@ -86,6 +86,13 @@ jobs:
 
       # The library must be there. Absent means the build failed quietly, and a
       # skipped test suite would report that as success.
+      # Before the build is judged: if the twins disagree, the Linux result says
+      # nothing about the Windows one, and the manifest comparison below would be
+      # comparing against a list built by a different script.
+      - name: The two build scripts agree
+        working-directory: pkg
+        run: python3 scripts/check-build-twins.py
+
       - name: The libraries exist and match the manifest
         working-directory: pkg
         run: |

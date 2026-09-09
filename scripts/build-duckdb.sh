@@ -35,8 +35,20 @@ expected=(
   core_functions_extension icu_extension duckdb_static
   duckdb_re2 duckdb_fmt duckdb_utf8proc duckdb_hyperloglog
   duckdb_fastpforlib duckdb_skiplistlib duckdb_mbedtls duckdb_yyjson
-  duckdb_fsst duckdb_zstd duckdb_miniz
+  duckdb_fsst duckdb_zstd duckdb_miniz duckdb_pg_query
+  duckdb_generated_extension_loader parquet_extension
 )
+# THE ORDER IS THE LINK ORDER, dependent before dependency, and it is what the
+# manifest is written in -- anything found but not named above is appended AFTER,
+# which is how a divergence shows up as a reordering rather than as a missing name.
+#
+# The last three were added to the PowerShell twin on 2026-09-08 and not to this one.
+# On Linux they therefore fell through to the "extra" tail and the manifest came out
+# in a different order from Windows', which pkg-gate reported as "same libraries,
+# DIFFERENT ORDER at position 14". Third divergence between the twins in one night,
+# all three mine, all three from editing one file and not the other -- their shared
+# header says "the two must stay in step: same flags, same cache key, same manifest",
+# and saying it has not been enough.
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
