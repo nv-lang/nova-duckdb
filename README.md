@@ -147,6 +147,18 @@ Adds about **36 MB** to a binary on each platform.
   targeted `UPDATE`s.
 * **A connection is thread-affine.** Every extern is `#thread_affine`, so calling one
   from inside a `spawn` is a compile error rather than a race found in production.
+* **There is no effect family, and therefore no mock.** Consumers call the FFI
+  facade directly. This is worth knowing before you plan tests around it: today a
+  test that touches this package touches a real DuckDB file.
+* **When an effect family arrives it will not cover reading rows, and that is a rule
+  rather than an omission.** D456 п.3 forbids index-walking across an effect boundary
+  -- `count` plus `at(i)` are separate operations that must agree, and a mock
+  returning five columns and four values reddens nothing. Row access here is exactly
+  that shape (`ddb_value_i64(result, row, col)` and some twenty siblings), so it stays
+  below the boundary. The prescribed alternative -- one operation returning a
+  collection -- currently meets a compiler defect when the element is a record
+  (registry 221.1 #1070), so the question is open rather than decided.
+
 * **Encryption and `read_only` are not implemented in 0.1** and are *refused* rather
   than ignored, because a security setting that silently does nothing is worse than
   an error.
