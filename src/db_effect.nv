@@ -33,7 +33,7 @@
 module duckdb.db_effect
 
 import duckdb.ffi.{CDbHandle, CConnHandle, CResultHandle}
-import duckdb.types.{LogicalType, Value, Col}
+import duckdb.types.{Value, Col}
 import duckdb.errors.{DuckError, DbOptions}
 
 /// The three handles, as newtype RECORDS rather than the `*()` aliases in `ffi.nv`.

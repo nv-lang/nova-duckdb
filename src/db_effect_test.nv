@@ -16,7 +16,7 @@ module duckdb.db_effect_test
 
 import duckdb.db_effect.{Db, Col, DbRef, ConnRef, ResultRef}
 import duckdb.types.{LogicalType, Value}
-import duckdb.errors.{DuckError, DbOptions}
+import duckdb.errors.{DuckError}
 import duckdb.ffi.{CDbHandle, CConnHandle, CResultHandle}
 
 // A handler serving two columns and two rows from nothing at all. The handles are
