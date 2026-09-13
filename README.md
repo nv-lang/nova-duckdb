@@ -151,12 +151,20 @@ Adds about **36 MB** to a binary on each platform.
   (`db_effect.nv`) is the mockable one: nine operations, a real handler over DuckDB
   (`db_real.nv`) and any handler you write. The facade (`Database`/`Connection`/
   `QueryResult`) calls the C shim directly and needs no handler.
-* **THE EFFECT COVERS 11 OF THE FACADE'S 60 SHIM CALLS, and the other 49 are not a
-  gap you can mock around.** Value readers, the appender and prepared statements sit
-  below the effect boundary on purpose -- D456 п.3 forbids index-walking across one,
-  and `ddb_value_i64(result, row, col)` is exactly that shape. The consequence is the
-  thing to know: **a mock substitutes the lifecycle and NOT the reading.** Mock
-  `query`, then call `value()`, and a fake handle reaches a real C call.
+* **THE EFFECT COVERS 11 OF THE FACADE'S 60 SHIM CALLS, AND THAT IS AN INTERMEDIATE
+  STATE RATHER THAN THE DESIGN.** Value readers, the appender and prepared statements
+  go past the effect today. This package's `Db` was written before a cross-driver
+  boundary existed; plan 286 defines one and puts row reading INSIDE the effect
+  (`Rows.@next()`), so the slice you see here is where this package got to, not where
+  it is meant to stop. Its stage D5 brings that boundary here **without changing this
+  package's public API** -- no version is promised, because the stage carries an open
+  question of its own.
+* **What follows from it TODAY, and it is the thing to know: a mock substitutes the
+  lifecycle and NOT the reading.** Mock `query`, then call `value()`, and a fake
+  handle reaches a real C call. (The shape of the un-covered calls is also what D456
+  п.3 forbids across an effect boundary -- `ddb_value_i64(result, row, col)` walks by
+  index -- which is why the boundary that does cover them is a redesign rather than
+  more operations of the same kind.)
 * **So: to test against a substitute, use the EFFECT, not the facade.** `Db.describe`
   and `Db.next` read rows in one operation each, which is what D456 prescribes and
   what a mock can honestly serve. The facade offers the same pair (`describe`,
