@@ -26,7 +26,12 @@ on:
 
 jobs:
   gate:
-    name: guards + duckdb + nova test src
+    # The name says the WHOLE scope on purpose. It used to say
+    # `guards + duckdb + nova test src`, which was honest and still misled:
+    # a truthful narrow scope reads as completeness when the remainder is not
+    # named beside it. `examples` sat outside it for the package's whole life
+    # and nobody noticed, because nothing claimed otherwise.
+    name: guards + duckdb + nova test src + examples type-check
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -158,6 +163,56 @@ jobs:
             exit 1
           fi
           echo "tag $tag matches manifest $ver"
+
+      # THE EXAMPLES ARE THE ONLY CONSUMERS OF THIS PACKAGE, and until 2026-09-13
+      # nothing ran them. `nova test src` judges the inside; the examples are outside
+      # `src` and were judged by nobody. The cost of that was measured rather than
+      # imagined: eleven facade functions return `Result`, both examples were written
+      # as though they return the value, and neither had ever compiled. A signature
+      # change with no witness is a signature change nobody can notice.
+      #
+      # Type-check, not build: building them needs the published tag (their manifests
+      # pull `duckdb` by `version = "0.1"`) and the vendored engine. Type-check is
+      # what is available on every push, and it is exactly the half that was failing.
+      #
+      # Zero examples found is a FAILURE. A glob that stopped matching prints the same
+      # green as a clean run, and this file already carries that lesson twice.
+      - name: The examples still type-check
+        working-directory: pkg
+        env:
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+        run: |
+          set -uo pipefail
+          n=$(find examples -name '*.nv' | wc -l)
+          echo "example sources found: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::no example sources found -- the glob has stopped matching, and this step would pass on silence"
+            exit 1
+          fi
+          out=$("${GITHUB_WORKSPACE}/nova/nova-cli/target/release/nova" check examples 2>&1); rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::an example no longer type-checks -- the package's public surface changed under its own documentation"
+            exit 1
+          fi
+          # The runner prints a per-file verdict AND a summary. Trusting the exit code
+          # alone is how an empty measurement passes for a full one.
+          #
+          # STRIP THE COLOUR FIRST, and this is not defensive habit. The checker wraps
+          # the word `PASS` in ANSI when everything passed, so the bytes are
+          # `ESC[32mPASS ESC[0m: 2` and the literal `PASS: ` is NOT present on a green
+          # run. On a red run `PASS` is left plain. A grep for `PASS: ` therefore
+          # matches only while the examples are broken -- a control that works
+          # exclusively in the case it was not written for. Found by running this step
+          # on a healthy tree before committing it.
+          plain=$(echo "$out" | sed -E 's/\x1B\[[0-9;]*m//g')
+          if ! echo "$plain" | grep -qE '^PASS: [0-9]+'; then
+            echo "::error::the checker printed no summary line -- it may not have run"
+            exit 1
+          fi
+          echo "$plain" | grep -E '^PASS: [0-9]+
 
       - name: nova test src
         working-directory: pkg
