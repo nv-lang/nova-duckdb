@@ -84,21 +84,50 @@ static void set_err(char **slot, const char *msg) {
     if (*slot) memcpy(*slot, msg, n + 1);
 }
 
-const uint8_t *ddb_last_error(void *handle, int kind, int *out_len) {
-    const char *m = NULL;
-    if (handle) {
-        switch (kind) {
-            case 0: m = ((DdbDatabase *)handle)->err; break;
-            case 1: m = ((DdbConnection *)handle)->err; break;
-            case 2: m = ((DdbResult *)handle)->err; break;
-            case 3: m = ((DdbStatement *)handle)->err; break;
-            case 4: m = ((DdbAppender *)handle)->err; break;
-            default: m = NULL; break;
-        }
-    }
+
+/* The five typed doors onto the message. Each casts to ITS OWN struct -- there is no
+ * `kind` number here, and that is the point rather than tidiness.
+ *
+ * MEASURED 2026-09-13. The first version of these forwarded to `ddb_last_error` with a
+ * fixed kind, which left the switch in place. Mutating each door to pass its
+ * NEIGHBOUR'S kind reddened nothing across all 21 tests -- and a control (a deliberate
+ * syntax error here) proved the shim really is rebuilt, so the mutations did reach the
+ * binary. The layouts explain it:
+ *
+ *     DdbDatabase  { duckdb_database  db;   char *err; }
+ *     DdbConnection{ duckdb_connection con; char *err; }
+ *     DdbStatement { duckdb_prepared_statement stmt; char *err; }
+ *     DdbAppender  { duckdb_appender  app;  char *err; }
+ *     DdbResult    { duckdb_result    res;  char *err; ... }
+ *
+ * Four begin with a pointer, so `err` lands at the same offset and a swapped kind
+ * reads the same field -- the switch is decorative for them. The fifth begins with a
+ * STRUCT, so a wrong kind there reads a wrong offset and returns whatever sits inside
+ * `duckdb_result`, silently. That is the real shape of the hazard: four cases hide the
+ * mistake and the fifth corrupts.
+ *
+ * With the cast written per door the compiler checks the member exists and no number
+ * is left to get wrong. */
+static const uint8_t *err_of(const char *m, int *out_len) {
     if (!m) { *out_len = 0; return (const uint8_t *)""; }
     *out_len = (int)strlen(m);
     return (const uint8_t *)m;
+}
+
+const uint8_t *ddb_last_error_db(void *db, int *out_len) {
+    return err_of(db ? ((DdbDatabase *)db)->err : NULL, out_len);
+}
+const uint8_t *ddb_last_error_conn(void *conn, int *out_len) {
+    return err_of(conn ? ((DdbConnection *)conn)->err : NULL, out_len);
+}
+const uint8_t *ddb_last_error_result(void *result, int *out_len) {
+    return err_of(result ? ((DdbResult *)result)->err : NULL, out_len);
+}
+const uint8_t *ddb_last_error_stmt(void *stmt, int *out_len) {
+    return err_of(stmt ? ((DdbStatement *)stmt)->err : NULL, out_len);
+}
+const uint8_t *ddb_last_error_appender(void *appender, int *out_len) {
+    return err_of(appender ? ((DdbAppender *)appender)->err : NULL, out_len);
 }
 
 /* ── open ────────────────────────────────────────────────────────────────────*/

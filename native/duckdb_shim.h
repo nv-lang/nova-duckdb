@@ -182,11 +182,27 @@ const char *ddb_version(void);
 
 /* ── errors ─────────────────────────────────────────────────────────────────
  *
- * The message of the last failure on this handle. Valid until the next call on
- * the same handle; Nova copies it immediately. `kind` selects which handle the
- * message belongs to, because DuckDB keeps them separately: 0 database,
- * 1 connection, 2 result, 3 prepared statement, 4 appender. */
-const uint8_t *ddb_last_error(void *handle, int kind, int *out_len);
+ * The message of the last failure on THAT handle. Valid until the next call on the
+ * same handle; Nova copies it immediately.
+ *
+ * ONE DOOR PER HANDLE, and no `kind` argument anywhere. There used to be a single
+ * `ddb_last_error(void *handle, int kind, int *out_len)` whose switch turned a number
+ * into a struct, and every Nova call site wrote that number by hand beside a cast.
+ *
+ * That shape hid its own mistakes: `DdbDatabase`, `DdbConnection`, `DdbStatement` and
+ * `DdbAppender` all begin with a pointer, so `err` sits at the same offset in all four
+ * and a swapped kind read the RIGHT field -- measured 2026-09-13 by mutating each kind
+ * in turn, with none of the 21 tests noticing. `DdbResult` begins with a struct, so the
+ * same mistake there reads a wrong offset and returns whatever lies inside
+ * `duckdb_result`. Four cases hide the error and the fifth corrupts.
+ *
+ * With a door per handle the cast is written once, next to the field it reads, and the
+ * C compiler checks the member exists. */
+const uint8_t *ddb_last_error_db(void *db, int *out_len);
+const uint8_t *ddb_last_error_conn(void *conn, int *out_len);
+const uint8_t *ddb_last_error_result(void *result, int *out_len);
+const uint8_t *ddb_last_error_stmt(void *stmt, int *out_len);
+const uint8_t *ddb_last_error_appender(void *appender, int *out_len);
 
 /* ── queries ────────────────────────────────────────────────────────────────*/
 

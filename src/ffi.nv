@@ -92,12 +92,15 @@ export const DDB_T_ENUM = 21
 export const DDB_T_UUID = 22
 export const DDB_T_SQLNULL = 23
 
-// Which handle a message belongs to, for `ddb_last_error`.
-export const KIND_DB = 0
-export const KIND_CONN = 1
-export const KIND_RESULT = 2
-export const KIND_STMT = 3
-export const KIND_APPENDER = 4
+// NO `KIND_*` CONSTANTS HERE ANY MORE, and their absence is the point.
+//
+// They selected which handle a message belonged to, and every one of the 21 call sites
+// in duckdb.nv wrote one by hand next to an `as *()` cast. That is 21 chances to pair
+// a connection handle with the database's kind -- a mistake C cannot catch, because
+// every handle is `void *` to it, and one that produces a WRONG MESSAGE rather than a
+// crash. The five typed externs below make the pairing impossible instead of merely
+// discouraged, and the numbers now live once, in the C wrappers, which is where a
+// constant describing C's own layout belongs.
 
 // ── database and connection ──────────────────────────────────────────────────
 
@@ -112,8 +115,19 @@ extern "C" fn ddb_close(db CDbHandle) -> ()
 #thread_affine
 extern "C" fn ddb_version() -> *u8
 
+// One door per handle type. The shim's generic `ddb_last_error` still exists and is
+// what these forward to -- see native/duckdb_shim.h -- but nothing in Nova calls it,
+// because calling it would mean naming a kind again.
 #thread_affine
-extern "C" fn ddb_last_error(handle *(), kind int, out_len *mut int) -> *u8
+extern "C" fn ddb_last_error_db(db CDbHandle, out_len *mut int) -> *u8
+#thread_affine
+extern "C" fn ddb_last_error_conn(conn CConnHandle, out_len *mut int) -> *u8
+#thread_affine
+extern "C" fn ddb_last_error_result(result CResultHandle, out_len *mut int) -> *u8
+#thread_affine
+extern "C" fn ddb_last_error_stmt(stmt CStmtHandle, out_len *mut int) -> *u8
+#thread_affine
+extern "C" fn ddb_last_error_appender(appender CAppHandle, out_len *mut int) -> *u8
 
 // ── queries ──────────────────────────────────────────────────────────────────
 
