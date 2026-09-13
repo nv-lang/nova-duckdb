@@ -147,17 +147,25 @@ Adds about **36 MB** to a binary on each platform.
   targeted `UPDATE`s.
 * **A connection is thread-affine.** Every extern is `#thread_affine`, so calling one
   from inside a `spawn` is a compile error rather than a race found in production.
-* **There is no effect family, and therefore no mock.** Consumers call the FFI
-  facade directly. This is worth knowing before you plan tests around it: today a
-  test that touches this package touches a real DuckDB file.
-* **When an effect family arrives it will not cover reading rows, and that is a rule
-  rather than an omission.** D456 п.3 forbids index-walking across an effect boundary
-  -- `count` plus `at(i)` are separate operations that must agree, and a mock
-  returning five columns and four values reddens nothing. Row access here is exactly
-  that shape (`ddb_value_i64(result, row, col)` and some twenty siblings), so it stays
-  below the boundary. The prescribed alternative -- one operation returning a
-  collection -- currently meets a compiler defect when the element is a record
-  (registry 221.1 #1070), so the question is open rather than decided.
+* **There are TWO layers, and they give different guarantees.** The `Db` effect
+  (`db_effect.nv`) is the mockable one: nine operations, a real handler over DuckDB
+  (`db_real.nv`) and any handler you write. The facade (`Database`/`Connection`/
+  `QueryResult`) calls the C shim directly and needs no handler.
+* **THE EFFECT COVERS 11 OF THE FACADE'S 60 SHIM CALLS, and the other 49 are not a
+  gap you can mock around.** Value readers, the appender and prepared statements sit
+  below the effect boundary on purpose -- D456 п.3 forbids index-walking across one,
+  and `ddb_value_i64(result, row, col)` is exactly that shape. The consequence is the
+  thing to know: **a mock substitutes the lifecycle and NOT the reading.** Mock
+  `query`, then call `value()`, and a fake handle reaches a real C call.
+* **So: to test against a substitute, use the EFFECT, not the facade.** `Db.describe`
+  and `Db.next` read rows in one operation each, which is what D456 prescribes and
+  what a mock can honestly serve. The facade offers the same pair (`describe`,
+  `next_row`) for direct use.
+* **A handler is required at RUN time, not at compile time.** Calling an effect
+  operation with no `with Db = ...` in scope compiles and then fails at runtime with
+  `unhandled effect Db.<op>: no active handler`. Measured, not assumed -- the same is
+  true of any effect in this language, so it is the normal shape rather than a
+  surprise this package invented.
 
 * **Encryption and `read_only` are not implemented in 0.1** and are *refused* rather
   than ignored, because a security setting that silently does nothing is worse than
