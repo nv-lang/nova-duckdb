@@ -29,7 +29,7 @@ const ROWS = 100_000
 const BASE_US = 1757347200000000
 
 fn text_at(r QueryResult, row int, col int) Fail[DuckError] -> str {
-    match r.value(row, col) {
+    match r.value(row, col)!! {
         Value.Text(s) => s
         Value.Null => "(null)"
         _ => "(not text)"
@@ -37,19 +37,19 @@ fn text_at(r QueryResult, row int, col int) Fail[DuckError] -> str {
 }
 
 fn int_at(r QueryResult, row int, col int) Fail[DuckError] -> i64 {
-    match r.value(row, col) {
+    match r.value(row, col)!! {
         Value.Int(n) => n
         _ => 0 - 1
     }
 }
 
 fn body(con Connection) Fail[DuckError] Time -> () {
-    ro _ = con.exec("CREATE TABLE IF NOT EXISTS sample (at TIMESTAMP NOT NULL, window_id INTEGER NOT NULL, percent TINYINT NOT NULL)")
-    ro _ = con.exec("DELETE FROM sample")
+    ro _ = con.exec("CREATE TABLE IF NOT EXISTS sample (at TIMESTAMP NOT NULL, window_id INTEGER NOT NULL, percent TINYINT NOT NULL)")!!
+    ro _ = con.exec("DELETE FROM sample")!!
 
     // ── write ────────────────────────────────────────────────────────────────
     ro t0 = Timestamp.now()
-    consume app = con.appender("", "sample") {
+    consume app = con.appender("", "sample")!! {
         mut i = 0
         while i < ROWS {
             // One sample every five minutes across four windows -- the shape
@@ -58,16 +58,16 @@ fn body(con Connection) Fail[DuckError] Time -> () {
                 Value.Instant(timestamp_of_micros(BASE_US + (i as i64) * 300_000_000)),
                 Value.Int(((i % 4) + 1) as i64),
                 Value.Int((i % 101) as i64),
-            ])
+            ])!!
             i += 1
         }
-        app.flush()
+        app.flush()!!
     }
     ro t1 = Timestamp.now()
     print("appended ${ROWS} rows in ${(t1.minus(t0)).millis()} ms")
 
     // ── read back through the extension functions ───────────────────────────
-    consume r = con.query("SELECT strftime(time_bucket(INTERVAL 1 HOUR, at), '%Y-%m-%d %H:%M') AS hour, count(*) AS n, max(percent) AS peak FROM sample GROUP BY 1 ORDER BY 1 LIMIT 3")
+    consume r = con.query("SELECT strftime(time_bucket(INTERVAL 1 HOUR, at), '%Y-%m-%d %H:%M') AS hour, count(*) AS n, max(percent) AS peak FROM sample GROUP BY 1 ORDER BY 1 LIMIT 3")!!
     defer { r.close() }
     print("first three hourly buckets:")
     mut row = 0
@@ -78,15 +78,15 @@ fn body(con Connection) Fail[DuckError] Time -> () {
 
     // ── export, inside the engine ───────────────────────────────────────────
     ro t2 = Timestamp.now()
-    ro _ = con.exec("COPY (SELECT at, window_id, percent FROM sample ORDER BY at) TO 'history.csv' (HEADER, DELIMITER ',')")
+    ro _ = con.exec("COPY (SELECT at, window_id, percent FROM sample ORDER BY at) TO 'history.csv' (HEADER, DELIMITER ',')")!!
     ro t3 = Timestamp.now()
     print("exported to history.csv in ${(t3.minus(t2)).millis()} ms")
 }
 
 fn main() Io Time -> () {
     with Fail[DuckError] = |e| { print("duckdb failed: ${e.message()}") } {
-        consume db = Database.open("history.duckdb", DbOptions.defaults()) {
-            consume con = db.connect() {
+        consume db = Database.open("history.duckdb", DbOptions.defaults())!! {
+            consume con = db.connect()!! {
                 body(con)
             }
         }
