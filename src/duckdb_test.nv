@@ -395,3 +395,24 @@ test "a LIST column is refused by name, not read as something else" {
     }
     assert(refused)
 }
+
+test "the facade reads with the effect's own form: describe plus next_row" {
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro n = with_db(fn(con Connection) -> int {
+            consume q = con.query("SELECT 1 AS id UNION ALL SELECT 2 ORDER BY id")!!
+            ro cols = q.describe()
+            assert(cols.len() == 1)
+            mut seen = 0
+            mut go = true
+            while go {
+                match q.next_row()!! {
+                    Some(row) => { seen = seen + 1; assert(row.len() == 1) }
+                    None => { go = false }
+                }
+            }
+            q.close()
+            seen
+        })
+        assert(n == 2)
+    }
+}

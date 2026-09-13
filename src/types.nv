@@ -195,6 +195,41 @@ export fn time_of_micros(us i64) -> Duration => (us * 1000).to_nanos()
 /// A sum rather than a bag of accessors returning `Option`: a caller that matches
 /// on this has handled every shape the database can hand back, and a new shape
 /// added later breaks the match instead of falling through a default.
+/// One column of a result: its name, its type, and whether it admits NULL.
+///
+/// A SUM because a collection of RECORDS does not survive an effect boundary (registry
+/// #1070) -- measured in this package, both ways, in `probes/form-g-sum-crosses/`. And
+/// `nullable` is a VARIANT rather than a field for exactly the same reason: as a `bool`
+/// field it would put the column back inside the record that fails.
+///
+/// DECLARED HERE AND NOT IN `db_effect.nv`, where it started. That module imports
+/// `duckdb.nv`, so the facade could not import it back without a cycle -- and the facade
+/// needs it, because the package must offer ONE reading form rather than two.
+export type Col enum
+    | Required(str, LogicalType)
+    | Nullable(str, LogicalType)
+
+/// The column's name, whichever variant it is.
+export fn Col @name() -> str =>
+    match @ {
+        Col.Required(n, _) => n
+        Col.Nullable(n, _) => n
+    }
+
+/// The column's type, whichever variant it is.
+export fn Col @kind() -> LogicalType =>
+    match @ {
+        Col.Required(_, k) => k
+        Col.Nullable(_, k) => k
+    }
+
+/// Does this column admit NULL?
+export fn Col @is_nullable() -> bool =>
+    match @ {
+        Col.Required(_, _) => false
+        Col.Nullable(_, _) => true
+    }
+
 export type Value enum
     | Null
     | Bool(bool)

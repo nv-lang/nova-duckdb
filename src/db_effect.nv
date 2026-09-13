@@ -33,7 +33,7 @@
 module duckdb.db_effect
 
 import duckdb.ffi.{CDbHandle, CConnHandle, CResultHandle}
-import duckdb.types.{LogicalType, Value}
+import duckdb.types.{LogicalType, Value, Col}
 import duckdb.duckdb.{DuckError, DbOptions}
 
 /// The three handles, as newtype RECORDS rather than the `*()` aliases in `ffi.nv`.
@@ -57,36 +57,6 @@ export type ResultRef value { ro h CResultHandle }
 export fn DbRef.of(h CDbHandle) -> DbRef => { h }
 export fn ConnRef.of(h CConnHandle) -> ConnRef => { h }
 export fn ResultRef.of(h CResultHandle) -> ResultRef => { h }
-
-/// One column of a result: its name, its type, and whether it admits NULL.
-///
-/// A SUM because a record cannot cross the boundary, and `nullable` is a variant
-/// rather than a field for exactly the same reason -- a `bool` field would put this
-/// back inside the record that fails. The fact costs the reader the same either way.
-export type Col enum
-    | Required(str, LogicalType)
-    | Nullable(str, LogicalType)
-
-/// The column's name, whichever variant it is.
-export fn Col @name() -> str =>
-    match @ {
-        Col.Required(n, _) => n
-        Col.Nullable(n, _) => n
-    }
-
-/// The column's type, whichever variant it is.
-export fn Col @kind() -> LogicalType =>
-    match @ {
-        Col.Required(_, k) => k
-        Col.Nullable(_, k) => k
-    }
-
-/// Does this column admit NULL?
-export fn Col @is_nullable() -> bool =>
-    match @ {
-        Col.Required(_, _) => false
-        Col.Nullable(_, _) => true
-    }
 
 /// The plumbing, and only the plumbing.
 ///

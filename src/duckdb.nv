@@ -52,7 +52,7 @@ import duckdb.ffi
 // Constants BY NAME: a module-qualified constant compiles to `ffi->NAME` and the
 // checker accepts it silently. Functions through the prefix are fine.
 import duckdb.ffi.{DDB_E_APPEND, DDB_E_BIND, DDB_E_CLOSED, DDB_E_OPEN, DDB_E_PREPARE, DDB_E_QUERY, DDB_E_TYPE, DDB_OK}
-import duckdb.types.{LogicalType, Value, DecimalValue, logical_type_of, str_of_raw, bytes_of_raw, timestamp_of_micros, micros_of_timestamp, date_of_epoch_days, time_of_micros}
+import duckdb.types.{LogicalType, Value, Col, DecimalValue, logical_type_of, str_of_raw, bytes_of_raw, timestamp_of_micros, micros_of_timestamp, date_of_epoch_days, time_of_micros}
 // `Timestamp` and `Uuid` are named in the binding signatures below, so they come
 // back in; the conversions themselves still live in `types.nv`.
 import std.time.duration.{Timestamp}
@@ -115,7 +115,15 @@ export fn DbOptions.defaults() -> DbOptions =>
 
 export type Database consume { ro h ffi.CDbHandle }
 export type Connection consume { ro h ffi.CConnHandle }
-export type QueryResult consume { ro h ffi.CResultHandle }
+/// A materialised result, with its own read cursor.
+///
+/// `cursor` is `mut` and the type is `consume`: the position belongs to the result and
+/// cannot be shared by accident. A caller holding the position instead would have to be
+/// trusted to advance it, and the one who forgets reads row zero forever.
+export type QueryResult consume {
+    ro h ffi.CResultHandle
+    mut cursor int
+}
 
 // ── errors from DuckDB ───────────────────────────────────────────────────────
 
@@ -412,6 +420,51 @@ fn QueryResult @read_text(r i64, c i64) -> str {
     ro p = unsafe { ffi.ddb_value_bytes(@h, r, c, &len) }
     str_of_raw(p, len)
 }
+
+/// The shape of the result, in the effect's own vocabulary (`db_effect.Col`).
+///
+/// THE SAME FORM THE EFFECT USES, deliberately: the package must offer ONE way to read
+/// a result, or a tag freezes two and a consumer has to guess which is meant. `columns()`
+/// below stays -- an index walk is legal beneath the effect boundary and the type-mapping
+/// tests are written against it -- but this is the one the README teaches.
+///
+/// Every column is reported `Nullable`, and saying so beats guessing: DuckDB gives
+/// nullability only through a prepared statement and this path has none. Claiming
+/// `Required` without knowing would promise a consumer that no NULL can arrive.
+/// [M-db-effect-nullability]
+export fn QueryResult @describe() -> []Col {
+    mut out = []Col.new()
+    mut i = 0
+    while i < @cols() {
+        ro c = @column(i)
+        out.push(Col.Nullable(c.name, c.kind))
+        i = i + 1
+    }
+    out
+}
+
+/// The next row, or `None` when there are no more.
+///
+/// `Option` and not an empty vector: "no more rows" and "a row with no columns" are
+/// different answers, and a loop that cannot tell them apart never ends on a result with
+/// zero columns.
+export fn QueryResult mut @next_row() -> Result[Option[[]Value], DuckError] {
+    if @cursor >= @rows() { return Ok(None) }
+    mut row = []Value.new()
+    mut c = 0
+    while c < @cols() {
+        match @value(@cursor, c) {
+            Err(e) => return Err(e)
+            Ok(v) => row.push(v)
+        }
+        c = c + 1
+    }
+    @cursor = @cursor + 1
+    Ok(Some(row))
+}
+
+/// Start reading again from the first row.
+export fn QueryResult mut @rewind() -> () { @cursor = 0 }
 
 export fn QueryResult consume @close() -> () {
     ffi.ddb_result_free(@h)
