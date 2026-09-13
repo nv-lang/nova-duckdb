@@ -15,7 +15,7 @@ module duckdb.db_real_test
 import duckdb.db_real.{with_real_db}
 import duckdb.db_effect.{Db, Col}
 import duckdb.types.{Value}
-import duckdb.duckdb.{DuckError, DbOptions}
+import duckdb.errors.{DuckError, DbOptions}
 
 // Every test opens an in-memory database and closes it. `:memory:` because a file
 // would make these tests share state with each other and with whatever ran before.

@@ -31,7 +31,7 @@
 module duckdb.db_real
 
 import duckdb.db_effect.{Db, Col, DbRef, ConnRef, ResultRef}
-import duckdb.duckdb.{DuckError, error_of, db_message, conn_message, result_message}
+import duckdb.errors.{DuckError, error_of, db_message, conn_message, result_message}
 import duckdb.types.{Value, logical_type_of, str_of_raw}
 import duckdb.ffi.{CResultHandle, DDB_OK}
 import duckdb.ffi

@@ -1,0 +1,131 @@
+// errors.nv — how this package reports failure, and what a person may set when opening.
+//
+// EXTRACTED FROM `duckdb.nv` SO THE FACADE CAN ROUTE THROUGH THE EFFECT. `db_effect.nv`
+// needs `DuckError` and `DbOptions`; the facade needs `Db`. With all of them in one
+// module that is a cycle, so the shared vocabulary moves DOWN -- the same fix `Col`
+// needed an hour earlier, for the same reason.
+//
+// THE PATTERN IS THE FAMILY'S, not an invention: `nova-http`'s own client facade calls
+// `Http.send` rather than the socket (`src/client/client.nv:356`). Checked before
+// starting, because a six-hundred-line refactor resting on an assumption is an
+// expensive way to find out the assumption was wrong.
+//
+// `errors.nv` and not `types.nv`: the five message readers below hold this package's
+// only `unsafe` blocks outside `ffi.nv`, and putting them beside `Value` and
+// `LogicalType` would make the type module the place where FFI happens.
+
+module duckdb.errors
+
+import duckdb.ffi
+import duckdb.ffi.{CDbHandle, CConnHandle, CResultHandle, CStmtHandle, CAppHandle}
+import duckdb.ffi.{DDB_E_APPEND, DDB_E_BIND, DDB_E_CLOSED, DDB_E_OPEN, DDB_E_PREPARE, DDB_E_QUERY, DDB_E_TYPE}
+import duckdb.types.{str_of_raw}
+
+/// What went wrong. One variant per shim error code, so a caller can match
+/// exhaustively and a new code cannot arrive unnoticed.
+export type DuckError enum
+    | Open(str)
+    | Query(str)
+    | Prepare(str)
+    | Bind(str)
+    | Append(str)
+    /// A column of a type 0.1 does not read (§4.1), or a value that cannot cross
+    /// faithfully — a sub-microsecond instant, an interval carrying months.
+    | Type(str)
+    | Closed
+
+export fn DuckError @message() -> str {
+    match @ {
+        DuckError.Open(m) => m
+        DuckError.Query(m) => m
+        DuckError.Prepare(m) => m
+        DuckError.Bind(m) => m
+        DuckError.Append(m) => m
+        DuckError.Type(m) => m
+        DuckError.Closed => "handle already closed"
+    }
+}
+
+/// How to open a database.
+///
+/// `DbOptions` AND NOT `OpenOptions`, which is what it was called first:
+/// `std/fs/fs.nv` exports an `OpenOptions` of its own, and a consumer with both in
+/// one compilation unit gets `redefinition of 'NovaValue_OpenOptions'` from clang
+/// while `nova check` stays green. Third carrier of that class in this package
+/// alone (registry 1040).
+///
+/// The defaults are the ones 01.2 §3.1 asks a consumer to use, so a caller that
+/// does not care gets the right thing: two threads and half a gigabyte, which is
+/// what a desktop application polling an endpoint every five minutes needs.
+export type DbOptions value {
+    read_only bool
+    /// DuckDB's own spelling, e.g. "512MB".
+    memory_limit str
+    threads int
+    /// Where DuckDB spills. Empty means beside the database file. It is NEVER
+    /// `~/.duckdb` — the shim always sets this, so a stray directory cannot appear
+    /// in a person's home (01.2 §0а).
+    temp_dir str
+    /// 32 bytes for AES-256-GCM, or empty for an unencrypted file. The key is not
+    /// stored anywhere by this package.
+    encryption_key str
+}
+
+export fn DbOptions.defaults() -> DbOptions =>
+    { read_only: false, memory_limit: "512MB", threads: 2, temp_dir: "", encryption_key: "" }
+
+
+// FIVE TYPED READERS, one per handle. Each is the whole of its own unsafe block, so
+// the surface where a raw pointer exists at all is five lines rather than every error
+// path in this file.
+//
+// They replace one `message_of(handle *(), kind int)` that every caller fed an
+// `as *()` cast and a hand-written kind constant -- 21 opportunities to pair a
+// connection with the database's kind, which C cannot catch (every handle is `void *`
+// there) and which yields a WRONG MESSAGE rather than a crash.
+export fn no_message(m str) -> str => if m == "" { "duckdb reported no message" } else { m }
+
+export fn db_message(h CDbHandle) -> str {
+    mut len = 0
+    no_message(str_of_raw(unsafe { ffi.ddb_last_error_db(h, &len) }, len))
+}
+
+export fn conn_message(h CConnHandle) -> str {
+    mut len = 0
+    no_message(str_of_raw(unsafe { ffi.ddb_last_error_conn(h, &len) }, len))
+}
+
+export fn result_message(h CResultHandle) -> str {
+    mut len = 0
+    no_message(str_of_raw(unsafe { ffi.ddb_last_error_result(h, &len) }, len))
+}
+
+export fn stmt_message(h CStmtHandle) -> str {
+    mut len = 0
+    no_message(str_of_raw(unsafe { ffi.ddb_last_error_stmt(h, &len) }, len))
+}
+
+export fn app_message(h CAppHandle) -> str {
+    mut len = 0
+    no_message(str_of_raw(unsafe { ffi.ddb_last_error_appender(h, &len) }, len))
+}
+
+/// Turn a shim code plus a message into the error to throw.
+///
+/// The code decides the VARIANT, the message arrives already read. Keeping them apart
+/// is what lets a caller switch on the kind of failure while still showing a person
+/// what the engine actually said.
+///
+/// PURE, and that is new: this is the only part of the error path with rules in it,
+/// and until the typed doors landed it could not be tested at all, because it took a
+/// live handle.
+export fn error_of(code int, m str) -> DuckError {
+    if code == DDB_E_OPEN { return DuckError.Open(m) }
+    if code == DDB_E_QUERY { return DuckError.Query(m) }
+    if code == DDB_E_PREPARE { return DuckError.Prepare(m) }
+    if code == DDB_E_BIND { return DuckError.Bind(m) }
+    if code == DDB_E_APPEND { return DuckError.Append(m) }
+    if code == DDB_E_TYPE { return DuckError.Type(m) }
+    if code == DDB_E_CLOSED { return DuckError.Closed }
+    DuckError.Query(m)
+}
