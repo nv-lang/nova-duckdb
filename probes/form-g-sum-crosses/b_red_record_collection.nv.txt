@@ -1,0 +1,24 @@
+module duckdb.gprobe_test
+
+import duckdb.types.{LogicalType}
+
+type Col value { name str, kind LogicalType, nullable bool }
+
+type Probe effect {
+    describe() -> []Col
+}
+
+fn name_of(c Col) -> str => c.name
+
+test "a collection of SUMS carrying a name and a type crosses the effect boundary" {
+    ro got = with Probe = effect Probe {
+        describe() -> []Col {
+            [{ name: "id", kind: LogicalType.Integer, nullable: false }, { name: "email", kind: LogicalType.Varchar, nullable: true }]
+        }
+    } {
+        Probe.describe()
+    }
+    assert(got.len() == 2)
+    assert(name_of(got[0]) == "id")
+    assert(name_of(got[1]) == "email")
+}

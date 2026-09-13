@@ -1,0 +1,15 @@
+module duckdb.errprobe_test
+
+import duckdb.duckdb.{DuckError}
+import duckdb.ffi.{CResultHandle}
+
+// A newtype RECORD around the handle instead of a bare pointer alias.
+type ResultRef value { ro h CResultHandle }
+
+fn wrapped() -> Result[ResultRef, DuckError] => Err(DuckError.Query("boom"))
+
+test "the workaround: a newtype record instead of a pointer alias" {
+    mut m = ""
+    match wrapped() { Ok(_) => { }, Err(e) => { m = e.message() } }
+    assert(m == "boom")
+}

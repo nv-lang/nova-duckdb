@@ -1,0 +1,30 @@
+module duckdb.gprobe_test
+
+import duckdb.types.{LogicalType}
+
+type Col enum
+    | Required(str, LogicalType)
+    | Nullable(str, LogicalType)
+
+type Probe effect {
+    describe() -> []Col
+}
+
+fn name_of(c Col) -> str =>
+    match c {
+        Col.Required(n, _) => n
+        Col.Nullable(n, _) => n
+    }
+
+test "a collection of SUMS carrying a name and a type crosses the effect boundary" {
+    ro got = with Probe = effect Probe {
+        describe() -> []Col {
+            [Col.Required("id", LogicalType.Integer), Col.Nullable("email", LogicalType.Varchar)]
+        }
+    } {
+        Probe.describe()
+    }
+    assert(got.len() == 2)
+    assert(name_of(got[0]) == "id")
+    assert(name_of(got[1]) == "email")
+}

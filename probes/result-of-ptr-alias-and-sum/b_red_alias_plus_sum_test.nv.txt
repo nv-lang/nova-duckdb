@@ -1,0 +1,15 @@
+module duckdb.errprobe_test
+
+import duckdb.duckdb.{DuckError}
+import duckdb.ffi.{CResultHandle}
+
+fn plain() -> Result[CResultHandle, DuckError] => Err(DuckError.Query("boom"))
+
+test "a pointer ALIAS as Ok, a payload SUM as Err" {
+    mut m = ""
+    match plain() {
+        Ok(_) => { }
+        Err(e) => { m = e.message() }
+    }
+    assert(m == "boom")
+}

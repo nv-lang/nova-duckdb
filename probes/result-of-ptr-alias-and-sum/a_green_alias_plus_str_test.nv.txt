@@ -1,0 +1,11 @@
+module duckdb.errprobe_test
+
+import duckdb.ffi.{CResultHandle}
+
+fn a() -> Result[CResultHandle, str] => Err("boom")
+
+test "the same pointer alias, but a PLAIN str error" {
+    mut m = ""
+    match a() { Ok(_) => { }, Err(e) => { m = e } }
+    assert(m == "boom")
+}

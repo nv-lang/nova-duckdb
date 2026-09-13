@@ -1,0 +1,11 @@
+module duckdb.errprobe_test
+
+import duckdb.duckdb.{DuckError}
+
+fn fails() -> Result[int, DuckError] => Err(DuckError.Query("boom"))
+
+test "the same payload sum, but a plain int as Ok" {
+    mut m = ""
+    match fails() { Ok(_) => { }, Err(e) => { m = e.message() } }
+    assert(m == "boom")
+}

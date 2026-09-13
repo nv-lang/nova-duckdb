@@ -1,0 +1,117 @@
+// db_effect.nv — the `Db` effect family (subplan 01.4 §4.2, form `g`).
+//
+// WHY AN EFFECT AT ALL. Without one, every test that touches a database touches a real
+// DuckDB file: a consumer cannot ask "what does my code do when the engine refuses",
+// because the only way to make it refuse is to break something for real. With one, the
+// plumbing is substitutable and the interesting failures are values a test writes down.
+//
+// FORM `g`, AND EVERY PART OF IT IS FORCED RATHER THAN CHOSEN:
+//
+//   * A COLUMN IS A SUM, not a record. A collection of RECORDS does not survive an
+//     effect boundary (registry #1070) -- measured in this package, both ways, in
+//     `probes/form-g-sum-crosses/`. `nullable` is a VARIANT for the same reason: as a
+//     `bool` field it would be part of the record that cannot cross.
+//
+//   * ROWS COME ONE OPERATION AT A TIME, `next() -> Option[[]Val]`, and NOT as
+//     `count()` plus `at(i)`. D456 п.3 forbids index-walking across an effect
+//     boundary: three operations that must agree, where a mock returning five columns
+//     and four values reddens nothing. One operation returning a collection is what the
+//     block prescribes, and `[]Value` is a collection of sums, so it crosses.
+//
+//   * THE LIFECYCLE OPERATIONS RETURN OPAQUE HANDLES. Nothing structural crosses at
+//     all there, which is why they were never in doubt.
+//
+// WHAT THIS DELIBERATELY DOES NOT DO. It does not replace the facade in `duckdb.nv`.
+// The facade keeps its own shape and will be routed through this effect as a separate
+// step: rewriting twenty-one call sites and introducing a new abstraction in one commit
+// would leave nobody able to say which of the two broke anything.
+
+// NOT `effect.nv`: `effect` is a keyword and cannot be a module path segment --
+// `expected identifier, got `effect``. nova-http keeps a file of that name only
+// because its FOLDER is the module there, so the file name never becomes a path
+// segment; here the file is the module.
+module duckdb.db_effect
+
+import duckdb.ffi.{CDbHandle, CConnHandle, CResultHandle}
+import duckdb.types.{LogicalType, Value}
+import duckdb.duckdb.{DuckError, DbOptions}
+
+/// The three handles, as newtype RECORDS rather than the `*()` aliases in `ffi.nv`.
+///
+/// TWO REASONS, and the second would be enough on its own.
+///
+/// `Result[CResultHandle, DuckError]` does not compile: both type arguments collapse to
+/// their representations and the Result is emitted as `Result[int, str]`, so the
+/// constructor and the call sites disagree and clang catches it from both directions.
+/// Four probes in `probes/result-of-ptr-alias-and-sum/` isolate it -- a pointer alias
+/// with a plain error compiles, a plain type with a sum error compiles, only the PAIR
+/// fails, and a newtype record fixes it. `nova check` prints `ok:` throughout.
+///
+/// And D456 п.5 asks a descriptor to be a NAMED TYPE, not a raw pointer. A `*()` alias
+/// answered that by the letter while keeping the representation -- which is precisely
+/// what the monomorphiser saw through. So the workaround is the shape the rule wanted.
+export type DbRef value { ro h CDbHandle }
+export type ConnRef value { ro h CConnHandle }
+export type ResultRef value { ro h CResultHandle }
+
+export fn DbRef.of(h CDbHandle) -> DbRef => { h }
+export fn ConnRef.of(h CConnHandle) -> ConnRef => { h }
+export fn ResultRef.of(h CResultHandle) -> ResultRef => { h }
+
+/// One column of a result: its name, its type, and whether it admits NULL.
+///
+/// A SUM because a record cannot cross the boundary, and `nullable` is a variant
+/// rather than a field for exactly the same reason -- a `bool` field would put this
+/// back inside the record that fails. The fact costs the reader the same either way.
+export type Col enum
+    | Required(str, LogicalType)
+    | Nullable(str, LogicalType)
+
+/// The column's name, whichever variant it is.
+export fn Col @name() -> str =>
+    match @ {
+        Col.Required(n, _) => n
+        Col.Nullable(n, _) => n
+    }
+
+/// The column's type, whichever variant it is.
+export fn Col @kind() -> LogicalType =>
+    match @ {
+        Col.Required(_, k) => k
+        Col.Nullable(_, k) => k
+    }
+
+/// Does this column admit NULL?
+export fn Col @is_nullable() -> bool =>
+    match @ {
+        Col.Required(_, _) => false
+        Col.Nullable(_, _) => true
+    }
+
+/// The plumbing, and only the plumbing.
+///
+/// Every operation returns a `Result`, never a code plus an out-parameter: D456 п.1 and
+/// п.4. Handles are the named types from `ffi.nv`, never a bare `int`: п.5. And no
+/// operation takes an index into something it also counts: п.3.
+export type Db effect {
+    open(path str, opts DbOptions) -> Result[DbRef, DuckError]
+    connect(db DbRef) -> Result[ConnRef, DuckError]
+
+    exec(conn ConnRef, sql str) -> Result[int, DuckError]
+    query(conn ConnRef, sql str) -> Result[ResultRef, DuckError]
+
+    // The shape of a result, in ONE call. `count` + `at(i)` is the shape D456 п.3
+    // forbids, and this is its prescribed replacement.
+    describe(result ResultRef) -> Result[[]Col, DuckError]
+
+    // The next row, or `None` when there are no more.
+    // 
+    // `Option` and not an empty vector: "no more rows" and "a row with no columns"
+    // are different answers, and a caller that cannot tell them apart loops forever
+    // on a result with zero columns.
+    next(result ResultRef) -> Result[Option[[]Value], DuckError]
+
+    close_result(result ResultRef) -> ()
+    close_conn(conn ConnRef) -> ()
+    close_db(db DbRef) -> ()
+}

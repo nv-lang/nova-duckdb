@@ -1,0 +1,137 @@
+// Tests for db_effect.nv — that the form crosses, and that a mock can serve a query
+// end to end without a database (subplan 01.4 §4.2).
+//
+//   ./nova.sh test src/ --filter db_effect
+//
+// THESE ARE NOT TESTS OF DUCKDB. Not one of them opens a file or links the engine --
+// that is the whole point of the effect, and the reason the card that needs it
+// (claude-limits T2.2) can be written before the package is tagged.
+//
+// What they pin is the SHAPE: that a collection of sums survives the boundary, that
+// rows arrive one operation at a time rather than by index, and that a handler which
+// refuses is as expressible as one that succeeds. The second is the one D456 п.3 is
+// about, and the third is what a mock exists for.
+
+module duckdb.db_effect_test
+
+import duckdb.db_effect.{Db, Col, DbRef, ConnRef, ResultRef}
+import duckdb.types.{LogicalType, Value}
+import duckdb.duckdb.{DuckError, DbOptions, default_options}
+import duckdb.ffi.{CDbHandle, CConnHandle, CResultHandle}
+
+// A handler serving two columns and two rows from nothing at all. The handles are
+// never dereferenced: a mock has no memory behind them, which is exactly why the
+// effect hands out opaque types rather than integers somebody might be tempted to use.
+fn two_row_db[T](body fn() Db -> T) -> T {
+    mut served = 0
+    with Db = effect Db {
+        open(path, opts) -> Result[DbRef, DuckError] { Ok(DbRef.of(0 as CDbHandle)) }
+        connect(db) -> Result[ConnRef, DuckError] { Ok(ConnRef.of(0 as CConnHandle)) }
+        exec(conn, sql) -> Result[int, DuckError] { Ok(0) }
+        query(conn, sql) -> Result[ResultRef, DuckError] { Ok(ResultRef.of(0 as CResultHandle)) }
+        describe(result) -> Result[[]Col, DuckError] {
+            Ok([Col.Required("id", LogicalType.Integer),
+                Col.Nullable("email", LogicalType.Varchar)])
+        }
+        next(result) -> Result[Option[[]Value], DuckError] {
+            served = served + 1
+            if served == 1 { return Ok(Some([Value.Int(1), Value.Text("a@b.c")])) }
+            if served == 2 { return Ok(Some([Value.Int(2), Value.Null])) }
+            Ok(None)
+        }
+        close_result(result) -> () { }
+        close_conn(conn) -> () { }
+        close_db(db) -> () { }
+    } {
+        body()
+    }
+}
+
+test "a collection of SUMS crosses the boundary, carrying names and types" {
+    // The form the whole design turns on. `probes/form-g-sum-crosses/` holds the
+    // control: the same operation returning a collection of RECORDS is a codegen
+    // error (#1070), so this shape is forced rather than preferred.
+    ro cols = two_row_db(fn() Db -> []Col {
+        ro r = Db.query(ConnRef.of(0 as CConnHandle), "SELECT 1")!!
+        Db.describe(r)!!
+    })
+    assert(cols.len() == 2)
+    assert(cols[0].name() == "id")
+    assert(cols[1].name() == "email")
+    assert(cols[0].kind().to_str() == "INTEGER")
+}
+
+test "nullable is a variant, and it survives the crossing as one" {
+    ro cols = two_row_db(fn() Db -> []Col {
+        Db.describe(Db.query(ConnRef.of(0 as CConnHandle), "SELECT 1")!!)!!
+    })
+    assert(!cols[0].is_nullable())
+    assert(cols[1].is_nullable())
+}
+
+test "rows arrive one operation at a time and end with None, not with an empty row" {
+    // The distinction D456 п.3 buys: "no more rows" and "a row with no columns" are
+    // different answers. A loop that cannot tell them apart never ends on a result
+    // with zero columns.
+    mut seen = 0
+    mut last_was_none = false
+    two_row_db(fn() Db -> () {
+        ro r = Db.query(ConnRef.of(0 as CConnHandle), "SELECT 1")!!
+        mut go = true
+        while go {
+            match Db.next(r)!! {
+                Some(row) => {
+                    seen = seen + 1
+                    assert(row.len() == 2)
+                }
+                None => { last_was_none = true; go = false }
+            }
+        }
+    })
+    assert(seen == 2)
+    assert(last_was_none)
+}
+
+test "a NULL arrives as a NULL and not as a zero" {
+    // The second row's second value. A mock that could not express this would be
+    // useless for the case the page most needs to render correctly.
+    mut nulls = 0
+    two_row_db(fn() Db -> () {
+        ro r = Db.query(ConnRef.of(0 as CConnHandle), "SELECT 1")!!
+        mut go = true
+        while go {
+            match Db.next(r)!! {
+                Some(row) => { for v in row { if v.is_null() { nulls = nulls + 1 } } }
+                None => { go = false }
+            }
+        }
+    })
+    assert(nulls == 1)
+}
+
+test "a handler that refuses is as expressible as one that succeeds" {
+    // The reason the effect exists at all: making the engine refuse for real means
+    // breaking something for real. Here it is a value.
+    mut message = ""
+    with Db = effect Db {
+        open(path, opts) -> Result[DbRef, DuckError] { Ok(DbRef.of(0 as CDbHandle)) }
+        connect(db) -> Result[ConnRef, DuckError] { Ok(ConnRef.of(0 as CConnHandle)) }
+        exec(conn, sql) -> Result[int, DuckError] { Ok(0) }
+        query(conn, sql) -> Result[ResultRef, DuckError] {
+            Err(DuckError.Query("table 'nope' does not exist"))
+        }
+        describe(result) -> Result[[]Col, DuckError] { Ok([Col.Required("x", LogicalType.Integer)]) }
+        next(result) -> Result[Option[[]Value], DuckError] { Ok(None) }
+        close_result(result) -> () { }
+        close_conn(conn) -> () { }
+        close_db(db) -> () { }
+    } {
+        match Db.query(ConnRef.of(0 as CConnHandle), "SELECT * FROM nope") {
+            Ok(_) => { }
+            Err(e) => { message = e.message() }
+        }
+    }
+    // Not `message != ""`: any failure would satisfy that, including one the handler
+    // never produced. The text is the thing being carried across.
+    assert(message.contains("nope"))
+}
