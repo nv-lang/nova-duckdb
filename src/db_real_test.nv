@@ -1,0 +1,125 @@
+// Tests for db_real.nv — the SAME effect, served by the real engine (01.4 §4.2).
+//
+//   ./nova.sh test src/ --filter db_real
+//
+// These DO open a database, and that is the point: `db_effect_test` proves the shape
+// crosses, this proves the shape is implementable over DuckDB. A mock that agreed with
+// a handler nobody had written would prove only that I can write two files that agree.
+//
+// WHAT TO COMPARE THEM AGAINST. Each test here has a sibling in `db_effect_test` asking
+// the same question of a handler with no database behind it. Where the two disagree,
+// one of them is wrong -- and that is the whole value of having both.
+
+module duckdb.db_real_test
+
+import duckdb.db_real.{with_real_db}
+import duckdb.db_effect.{Db, Col}
+import duckdb.types.{Value}
+import duckdb.duckdb.{DuckError, DbOptions}
+
+// Every test opens an in-memory database and closes it. `:memory:` because a file
+// would make these tests share state with each other and with whatever ran before.
+fn in_memory[T](body fn() Db -> T) Io -> T {
+    with_real_db(fn() Db -> T {
+        ro db = Db.open(":memory:", DbOptions.defaults())!!
+        ro conn = Db.connect(db)!!
+        ro out = body()
+        Db.close_conn(conn)
+        Db.close_db(db)
+        out
+    })
+}
+
+test "the real handler answers the same shape the mock does" {
+    ro cols = in_memory(fn() Db -> []Col {
+        ro db = Db.open(":memory:", DbOptions.defaults())!!
+        ro c = Db.connect(db)!!
+        ro r = Db.query(c, "SELECT 1 AS id, 'a@b.c' AS email")!!
+        ro out = Db.describe(r)!!
+        Db.close_result(r)
+        Db.close_conn(c)
+        Db.close_db(db)
+        out
+    })
+    assert(cols.len() == 2)
+    assert(cols[0].name() == "id")
+    assert(cols[1].name() == "email")
+}
+
+test "rows arrive one at a time and end with None, against a live engine" {
+    // The sibling of the mock's test of the same name. Two rows, then the end -- and
+    // the end is `None`, not an empty row.
+    mut seen = 0
+    mut ended = false
+    in_memory(fn() Db -> () {
+        ro db = Db.open(":memory:", DbOptions.defaults())!!
+        ro c = Db.connect(db)!!
+        ro _ = Db.exec(c, "CREATE TABLE t (id INTEGER, email VARCHAR)")!!
+        ro _ = Db.exec(c, "INSERT INTO t VALUES (1, 'a@b.c'), (2, NULL)")!!
+        ro r = Db.query(c, "SELECT id, email FROM t ORDER BY id")!!
+        mut go = true
+        while go {
+            match Db.next(r)!! {
+                Some(row) => { seen = seen + 1; assert(row.len() == 2) }
+                None => { ended = true; go = false }
+            }
+        }
+        Db.close_result(r)
+        Db.close_conn(c)
+        Db.close_db(db)
+    })
+    assert(seen == 2)
+    assert(ended)
+}
+
+test "a NULL from the engine is a NULL and not a zero" {
+    // The same assertion the mock makes, against real data. If these two ever
+    // disagree, the mock is lying to every test that uses it.
+    mut nulls = 0
+    mut texts = 0
+    in_memory(fn() Db -> () {
+        ro db = Db.open(":memory:", DbOptions.defaults())!!
+        ro c = Db.connect(db)!!
+        ro _ = Db.exec(c, "CREATE TABLE t (id INTEGER, email VARCHAR)")!!
+        ro _ = Db.exec(c, "INSERT INTO t VALUES (1, 'a@b.c'), (2, NULL)")!!
+        ro r = Db.query(c, "SELECT id, email FROM t ORDER BY id")!!
+        mut go = true
+        while go {
+            match Db.next(r)!! {
+                Some(row) => {
+                    for v in row {
+                        if v.is_null() { nulls = nulls + 1 }
+                        match v {
+                            Value.Text(_) => { texts = texts + 1 }
+                            _ => { }
+                        }
+                    }
+                }
+                None => { go = false }
+            }
+        }
+        Db.close_result(r)
+        Db.close_conn(c)
+        Db.close_db(db)
+    })
+    assert(nulls == 1)
+    assert(texts == 1)
+}
+
+test "a refusal from the engine carries the engine's own words" {
+    // Not `is_err()`: any failure would satisfy that, including one from opening the
+    // database. The text is what crosses the boundary, and it is the thing a person
+    // eventually reads.
+    mut message = ""
+    in_memory(fn() Db -> () {
+        ro db = Db.open(":memory:", DbOptions.defaults())!!
+        ro c = Db.connect(db)!!
+        match Db.query(c, "SELECT * FROM table_that_is_not_there") {
+            Ok(r) => { Db.close_result(r) }
+            Err(e) => { message = e.message() }
+        }
+        Db.close_conn(c)
+        Db.close_db(db)
+    })
+    assert(message.contains("table_that_is_not_there"))
+}

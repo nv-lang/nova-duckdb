@@ -1,0 +1,177 @@
+// db_real.nv — the production handler for `Db`, over the real engine (01.4 §4.2).
+//
+// The half that makes the effect a fact rather than a declaration. `db_effect.nv` says
+// what the plumbing looks like; this serves it from DuckDB, and `db_effect_test` serves
+// the same shape from nothing at all.
+//
+// WHY IT IS ITS OWN FILE. The same reason `accounts/real_dirs.nv` is separate in
+// claude-limits: a test that wants the mock must not drag the engine into its
+// compilation unit. Here it matters more -- the engine is tens of megabytes of
+// vendored C.
+//
+// WHY IT CALLS THE FFI DIRECTLY INSTEAD OF REUSING THE FACADE, which was my first
+// attempt and which the compiler stopped. `Database`, `Connection` and `QueryResult`
+// are `consume` types with `@cleanup`: building one from a handle the effect already
+// owns creates a SECOND owner, and the handle is then closed twice -- once when the
+// wrapper leaves scope and once by `close_db`. The facade owns its handles; this
+// handler owns the effect's. Two owners of one C pointer is not a style question.
+//
+// THE CURSOR IS THE ONLY STATE, AND IT IS THE INTERESTING PART. `next(result)` takes no
+// position by design: an index passed across a boundary is `count` + `at(i)` wearing a
+// different hat, and D456 п.3 forbids it. So the position lives HERE, beside the
+// engine, in the handler's closure -- exactly where the mock keeps its own.
+//
+// ONE ACTIVE RESULT AT A TIME in 0.1, stated rather than discovered. The cursor is a
+// single pair, so reading result B while A is unfinished restarts A. Nothing in the
+// shim prevents two results being open; what is missing is a cursor per handle, and
+// that needs handle identity. A consumer interleaving two results gets a WRONG ROW
+// rather than an error, which is why it is written here and in the README instead of
+// being met. [M-db-effect-one-cursor]
+
+module duckdb.db_real
+
+import duckdb.db_effect.{Db, Col, DbRef, ConnRef, ResultRef}
+import duckdb.duckdb.{DuckError, error_of, db_message, conn_message, result_message}
+import duckdb.types.{Value, logical_type_of, str_of_raw}
+import duckdb.ffi.{CResultHandle, DDB_OK}
+import duckdb.ffi
+
+/// Runs `body` with `Db` served by the real engine.
+export fn with_real_db[T](body fn() Db -> T) Io -> T {
+    // Which result is being read, and how far. A zero handle means "none yet" -- a
+    // sentinel, which D456 п.2 warns against, and tolerable only here: the value is a
+    // C pointer the engine never returns as null on success, and the alternative (an
+    // Option around a pointer alias) lands on the monomorphisation defect this package
+    // filed today, `probes/result-of-ptr-alias-and-sum/`.
+    mut cursor_of = 0 as CResultHandle
+    mut cursor_row = 0
+
+    with Db = effect Db {
+        open(path, opts) -> Result[DbRef, DuckError] {
+            ro pb = path.bytes()
+            ro tb = opts.temp_dir.bytes()
+            ro mb = opts.memory_limit.bytes()
+            ro kb = opts.encryption_key.bytes()
+            ro ro_flag = if opts.read_only { 1 } else { 0 }
+            mut err = 0
+            ro h = unsafe {
+                ffi.ddb_open(pb.ptr(), pb.len(), tb.ptr(), tb.len(), mb.ptr(), mb.len(),
+                             opts.threads, ro_flag, kb.ptr(), kb.len(), &err)
+            }
+            if err != DDB_OK { return Err(error_of(err, db_message(h))) }
+            Ok(DbRef.of(h))
+        }
+
+        connect(db) -> Result[ConnRef, DuckError] {
+            mut err = 0
+            ro c = unsafe { ffi.ddb_connect(db.h, &err) }
+            if err != DDB_OK { return Err(error_of(err, db_message(db.h))) }
+            Ok(ConnRef.of(c))
+        }
+
+        exec(conn, sql) -> Result[int, DuckError] {
+            ro b = sql.bytes()
+            mut changed i64 = 0
+            ro rc = unsafe { ffi.ddb_exec(conn.h, b.ptr(), b.len(), &changed) }
+            if rc != DDB_OK { return Err(error_of(rc, conn_message(conn.h))) }
+            Ok(changed as int)
+        }
+
+        query(conn, sql) -> Result[ResultRef, DuckError] {
+            ro b = sql.bytes()
+            mut err = 0
+            ro r = unsafe { ffi.ddb_query(conn.h, b.ptr(), b.len(), &err) }
+            if err != DDB_OK { return Err(error_of(err, conn_message(conn.h))) }
+            cursor_of = r
+            cursor_row = 0
+            Ok(ResultRef.of(r))
+        }
+
+        describe(result) -> Result[[]Col, DuckError] {
+            mut out = []Col.new()
+            ro n = ffi.ddb_result_cols(result.h) as int
+            mut i = 0
+            while i < n {
+                mut len = 0
+                ro p = unsafe { ffi.ddb_result_col_name(result.h, i as i64, &len) }
+                ro kind = logical_type_of(ffi.ddb_result_col_type(result.h, i as i64))
+                // EVERY COLUMN IS `Nullable` IN 0.1, and saying so beats guessing:
+                // this path has no prepared statement, and DuckDB reports nullability
+                // only through one. Claiming `Required` without knowing would promise
+                // a consumer that no NULL can arrive, and then one does.
+                // [M-db-effect-nullability]
+                out.push(Col.Nullable(str_of_raw(p, len), kind))
+                i = i + 1
+            }
+            Ok(out)
+        }
+
+        next(result) -> Result[Option[[]Value], DuckError] {
+            if result.h != cursor_of {
+                // A different result than the one being read. See the header: the
+                // cursor is single in 0.1, so this restarts rather than interleaves.
+                cursor_of = result.h
+                cursor_row = 0
+            }
+            ro rows = ffi.ddb_result_rows(result.h) as int
+            if cursor_row >= rows { return Ok(None) }
+
+            ro cols = ffi.ddb_result_cols(result.h) as int
+            mut row = []Value.new()
+            mut c = 0
+            while c < cols {
+                match value_at(result.h, cursor_row, c) {
+                    Err(e) => return Err(e)
+                    Ok(v) => row.push(v)
+                }
+                c = c + 1
+            }
+            cursor_row = cursor_row + 1
+            Ok(Some(row))
+        }
+
+        close_result(result) -> () { ffi.ddb_result_free(result.h) }
+        close_conn(conn) -> () { ffi.ddb_disconnect(conn.h) }
+        close_db(db) -> () { ffi.ddb_close(db.h) }
+    } {
+        body()
+    }
+}
+
+/// One cell, by the column's declared type.
+///
+/// 0.1 reads the types the subplan names and refuses the rest BY NAME rather than
+/// reading them as something else -- a LIST silently read as its first element is the
+/// failure this shape exists to prevent.
+fn value_at(h CResultHandle, row int, col int) -> Result[Value, DuckError] {
+    if ffi.ddb_value_is_null(h, row as i64, col as i64) != 0 { return Ok(Value.Null) }
+    ro r = row as i64
+    ro c = col as i64
+    ro kind = logical_type_of(ffi.ddb_result_col_type(h, c))
+
+    match kind {
+        LogicalType.Boolean => {
+            mut v = 0
+            ro rc = unsafe { ffi.ddb_value_bool(h, r, c, &v) }
+            if rc != DDB_OK { return Err(error_of(rc, result_message(h))) }
+            Ok(Value.Bool(v != 0))
+        }
+        LogicalType.TinyInt => read_int(h, r, c)
+        LogicalType.SmallInt => read_int(h, r, c)
+        LogicalType.Integer => read_int(h, r, c)
+        LogicalType.BigInt => read_int(h, r, c)
+        LogicalType.Varchar => {
+            mut len = 0
+            ro p = unsafe { ffi.ddb_value_bytes(h, r, c, &len) }
+            Ok(Value.Text(str_of_raw(p, len)))
+        }
+        _ => Err(DuckError.Type("column type ${kind.to_str()} is not read by 0.1 through the effect"))
+    }
+}
+
+fn read_int(h CResultHandle, r i64, c i64) -> Result[Value, DuckError] {
+    mut v i64 = 0
+    ro rc = unsafe { ffi.ddb_value_i64(h, r, c, &v) }
+    if rc != DDB_OK { return Err(error_of(rc, result_message(h))) }
+    Ok(Value.Int(v))
+}

@@ -127,42 +127,42 @@ export type QueryResult consume { ro h ffi.CResultHandle }
 // `as *()` cast and a hand-written kind constant -- 21 opportunities to pair a
 // connection with the database's kind, which C cannot catch (every handle is `void *`
 // there) and which yields a WRONG MESSAGE rather than a crash.
-fn no_message(m str) -> str => if m == "" { "duckdb reported no message" } else { m }
+export fn no_message(m str) -> str => if m == "" { "duckdb reported no message" } else { m }
 
-fn db_message(h ffi.CDbHandle) -> str {
+export fn db_message(h ffi.CDbHandle) -> str {
     mut len = 0
     no_message(str_of_raw(unsafe { ffi.ddb_last_error_db(h, &len) }, len))
 }
 
-fn conn_message(h ffi.CConnHandle) -> str {
+export fn conn_message(h ffi.CConnHandle) -> str {
     mut len = 0
     no_message(str_of_raw(unsafe { ffi.ddb_last_error_conn(h, &len) }, len))
 }
 
-fn result_message(h ffi.CResultHandle) -> str {
+export fn result_message(h ffi.CResultHandle) -> str {
     mut len = 0
     no_message(str_of_raw(unsafe { ffi.ddb_last_error_result(h, &len) }, len))
 }
 
-fn stmt_message(h ffi.CStmtHandle) -> str {
+export fn stmt_message(h ffi.CStmtHandle) -> str {
     mut len = 0
     no_message(str_of_raw(unsafe { ffi.ddb_last_error_stmt(h, &len) }, len))
 }
 
-fn app_message(h ffi.CAppHandle) -> str {
+export fn app_message(h ffi.CAppHandle) -> str {
     mut len = 0
     no_message(str_of_raw(unsafe { ffi.ddb_last_error_appender(h, &len) }, len))
 }
 
-/// Turn a shim code plus a handle into the error to throw.
+/// Turn a shim code plus a message into the error to throw.
 ///
-/// The code decides the VARIANT and the handle supplies the TEXT. Keeping them
-/// apart is what lets a caller switch on the kind of failure while still showing a
-/// person what the engine actually said.
-/// PURE, and that is new. The code decides the VARIANT, the message arrives already
-/// read -- so this function, which is the only part of the error path with rules in
-/// it, can be tested without a database. It could not be before: it took a live
-/// handle.
+/// The code decides the VARIANT, the message arrives already read. Keeping them apart
+/// is what lets a caller switch on the kind of failure while still showing a person
+/// what the engine actually said.
+///
+/// PURE, and that is new: this is the only part of the error path with rules in it,
+/// and until the typed doors landed it could not be tested at all, because it took a
+/// live handle.
 export fn error_of(code int, m str) -> DuckError {
     if code == DDB_E_OPEN { return DuckError.Open(m) }
     if code == DDB_E_QUERY { return DuckError.Query(m) }
