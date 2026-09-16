@@ -10,6 +10,12 @@ as consumers appear, *without* rebuilding the library — the static archive alr
 contains everything. A request to widen the surface is an issue naming the consumer
 and the function, not a "while we are here".
 
+**The tag is load-bearing, whatever the version is called.** A consumer pulls this
+package with `version = "0.1"`, and the resolver takes the newest matching **tag** --
+so a fix living on `main` reaches nobody until it is tagged, and the next tag moves
+every consumer's build with no announcement and nothing for them to do. 0.1.0 is not
+declared a release; it still behaves like one for anybody who depends on it.
+
 ## Status
 
 | | |
