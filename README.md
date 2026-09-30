@@ -23,7 +23,7 @@ declared a release; it still behaves like one for anybody who depends on it.
 | Nova surface | written, `nova check` clean |
 | C shim | compiled against the vendored DuckDB 1.5.5 — see [Building](#building) |
 | Tests | run where DuckDB is built (`nova test src`: PASS, 2026-09-30) |
-| Tag | `v0.1.1` — 0.1.0 plus the UTC session zone reaching every connection (2026-09-30) |
+| Tag | `v0.2.0` — encryption, and the `.of` constructors renamed `.new` (breaking); `v0.1.1` for consumers still on 0.1 |
 
 The package cannot be built where DuckDB has not been built first, and on a fresh
 checkout `nova test src` reports `CC-FAIL` on `src/duckdb_test` with
@@ -145,6 +145,69 @@ nothing. Whether `~/.duckdb` gets created is checked by hand at present, not by 
 suite; the test file's banner claimed otherwise and has been corrected.
 
 Adds about **36 MB** to a binary on each platform.
+
+## Encryption (0.2)
+
+`DbOptions.encryption_key` non-empty opens the FILE encrypted: AES-GCM, the key
+derived by DuckDB from the string you pass. The same key reads it back; any other key,
+or none, is refused with DuckDB's own message ("... wrong encryption key ..."). The
+bytes on disk carry no plaintext -- `src/encryption_test.nv` greps a written row and,
+as a control, finds it in an unencrypted file.
+
+**How.** DuckDB 1.5.5 refuses to WRITE an encrypted file with the crypto it carries:
+its AES-GCM is mbedTLS, but its nonce source is a `RandomEngine` (PCG), and a nonce
+repeated under one key breaks GCM. It asks for httpfs (OpenSSL and a network file
+system -- not in a package that must stay off the network) or `force_mbedtls_unsafe`.
+`native/os_nonce_crypto.cpp` keeps DuckDB's AES-GCM and replaces only the random
+source -- `BCryptGenRandom` on Windows, `getrandom` on Linux -- and installs it as the
+database's `DBConfig::encryption_util`. The shim then opens an in-memory database,
+`ATTACH`es the file with the key, and runs `USE` on every connection.
+
+It is built as its own static library, `nova_duckdb_crypto`, by
+`scripts/build-crypto.{ps1,sh}` (called by `build-duckdb.*` on every run) with the
+compiler and flags DuckDB was built with: `[ffi] c_shims` compiles C only, and the file
+uses DuckDB's C++ classes.
+
+Not from the OS: the database identifier and key ids DuckDB draws from `RandomEngine`
+(`GenerateDBIdentifier`, `GenerateRandomKeyID`). They are salts and names, which need to
+differ, not to be unpredictable; every nonce and every temporary key goes through the
+replaced method.
+
+The key passes through SQL text once, inside the shim (`ATTACH` takes no bound
+parameters). The statement buffer is wiped before it is freed, and a DuckDB error
+message that contains the key is replaced by one that does not.
+
+### What to check on EVERY DuckDB upgrade
+
+This reaches into DuckDB's internals. Before bumping the submodule, check each of these
+against the new version, and run `src/encryption_test.nv`:
+
+1. `duckdb::DatabaseWrapper` in `src/include/duckdb/main/capi/capi_internal.hpp` still
+   holds `shared_ptr<DuckDB> database` (how a `duckdb_database` is reached).
+2. `DBConfig::encryption_util` in `src/include/duckdb/main/config.hpp` is still a
+   `shared_ptr<EncryptionUtil>`, and `DatabaseInstance::GetEncryptionUtil`
+   (`src/main/database.cpp`) still returns it before it would refuse.
+3. `EncryptionUtil::CreateEncryptionState(unique_ptr<EncryptionStateMetadata>)` and
+   `EncryptionState::GenerateRandomData(data_ptr_t, idx_t)` keep their signatures
+   (`src/include/duckdb/common/encryption_state.hpp`).
+4. `duckdb_mbedtls::MbedTlsWrapper::AESStateMBEDTLS` still has a public constructor
+   taking the metadata (`third_party/mbedtls/include/mbedtls_wrapper.hpp`).
+5. Every call site that draws nonces or temporary keys still goes through the state's
+   `GenerateRandomData`, not a static or a `RandomEngine`:
+   `grep -rn "GenerateRandomData\|RandomEngine" src/storage src/common/encryption*`.
+6. `ATTACH ... (ENCRYPTION_KEY ...)` is still how a file is opened encrypted.
+
+A changed signature fails the build; a changed CALL SITE (5) does not -- it would
+silently put `RandomEngine` nonces back. That is why it is on this list by grep.
+
+## 0.2.0: what changed for a consumer
+
+* **Breaking:** the one-argument constructors are `.new`, not `.of` --
+  `DbRef.new`, `ConnRef.new`, `ResultRef.new`, `DecimalValue.new`. `of` is reserved for
+  variadic collections (`W_NONVARIADIC_OF`).
+* `open` with a non-empty `encryption_key` now opens the file encrypted instead of
+  refusing.
+* Links one more archive, `nova_duckdb_crypto`, first in `[ffi] libs`.
 
 ## What it costs you to know
 

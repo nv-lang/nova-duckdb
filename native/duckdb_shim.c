@@ -65,7 +65,10 @@ static char *dup_str(const uint8_t *p, int len) {
  * gives every handle somewhere to keep its last error message, which the C API
  * otherwise attaches to a result rather than to a connection. */
 
-typedef struct { duckdb_database db; char *err; } DdbDatabase;
+/* `encrypted` is appended AFTER `err` on purpose: the layout note below depends on
+ * `err` sitting right after the handle. Set when the file is attached with a key, so
+ * every connection is pointed at it (`ddb_connect`). */
+typedef struct { duckdb_database db; char *err; int encrypted; } DdbDatabase;
 typedef struct { duckdb_connection con; char *err; } DdbConnection;
 /* `strbuf` is a ONE-SLOT arena for the text of the last value read, kept apart
  * from `err` on purpose: parking a value in the error slot makes
@@ -146,6 +149,73 @@ static int apply_setting(DdbConnection *c, const char *sql) {
     return 1;
 }
 
+/* ── encryption (0.2) ────────────────────────────────────────────────────────
+ *
+ * DuckDB encrypts a database only through `ATTACH '<path>' AS x (ENCRYPTION_KEY k)`,
+ * and it refuses to WRITE one with the crypto module it carries (its nonce source is
+ * not cryptographic). `os_nonce_crypto.cpp` installs DuckDB's own AES-GCM with nonces
+ * from the OS; this file opens an in-memory database, installs that, attaches the file
+ * with the key, and points every connection at it.
+ *
+ * THE KEY PASSES THROUGH SQL TEXT, because ATTACH takes no bound parameters. It stays
+ * inside this file: the statement buffer is wiped before it is freed, and a DuckDB
+ * error that happens to contain the key is replaced by a message that does not. */
+
+int ddb_install_os_nonce_crypto(duckdb_database db);    /* os_nonce_crypto.cpp */
+
+/* The alias the encrypted file is attached under. */
+#define DDB_ENCRYPTED_ALIAS "nova_db"
+
+/* `s` as an SQL string literal, quotes doubled. Caller frees (wipe first if secret). */
+static char *sql_literal(const char *s) {
+    size_t n = strlen(s), q = 0;
+    for (size_t i = 0; i < n; i++) if (s[i] == '\'') q++;
+    char *out = (char *)malloc(n + q + 3);
+    if (!out) return NULL;
+    size_t j = 0;
+    out[j++] = '\'';
+    for (size_t i = 0; i < n; i++) {
+        out[j++] = s[i];
+        if (s[i] == '\'') out[j++] = '\'';
+    }
+    out[j++] = '\'';
+    out[j] = '\0';
+    return out;
+}
+
+static void wipe_free(char *s) {
+    if (!s) return;
+    volatile char *v = s;
+    while (*v) { *v = 0; v++; }
+    free(s);
+}
+
+/* Attach the file at `path` with `key` on connection `c`. 1 on success. */
+static int attach_encrypted(DdbConnection *c, const char *path, const char *key) {
+    char *qp = sql_literal(path);
+    char *qk = sql_literal(key);
+    if (!qp || !qk) { free(qp); wipe_free(qk); set_err(&c->err, "out of memory"); return 0; }
+    size_t n = strlen(qp) + strlen(qk) + 64;
+    char *sql = (char *)malloc(n);
+    if (!sql) { free(qp); wipe_free(qk); set_err(&c->err, "out of memory"); return 0; }
+    snprintf(sql, n, "ATTACH %s AS " DDB_ENCRYPTED_ALIAS " (ENCRYPTION_KEY %s)", qp, qk);
+    duckdb_result r;
+    int ok = duckdb_query(c->con, sql, &r) == DuckDBSuccess;
+    if (!ok) {
+        const char *m = duckdb_result_error(&r);
+        if (m && strstr(m, key) == NULL) {
+            set_err(&c->err, m);
+        } else {
+            set_err(&c->err, "the encrypted database did not open (the engine's message is withheld: it contained the key)");
+        }
+    }
+    duckdb_destroy_result(&r);
+    free(qp);
+    wipe_free(qk);
+    wipe_free(sql);
+    return ok;
+}
+
 void *ddb_open(const uint8_t *path, int path_len,
                const uint8_t *temp_dir, int temp_dir_len,
                const uint8_t *memory_limit, int memory_limit_len,
@@ -154,24 +224,17 @@ void *ddb_open(const uint8_t *path, int path_len,
                int *out_err) {
     *out_err = DDBC_OK;
 
-    /* ENCRYPTION IS REFUSED RATHER THAN GUESSED. 01.2 §12 wants the file
-     * encrypted, and DuckDB does support it, but the C-API spelling is not in the
-     * spike and inventing it here would produce a call that compiles and does
-     * nothing — the worst possible outcome for a security setting. It arrives when
-     * `duckdb.h` is on the machine to read. */
-    if (encryption_key_len > 0) {
-        *out_err = DDBC_E_OPEN;
-        return NULL;
-    }
-
     DdbDatabase *d = (DdbDatabase *)calloc(1, sizeof(DdbDatabase));
     if (!d) { *out_err = DDBC_E_OPEN; return NULL; }
 
     char *p = dup_str(path, path_len);
     if (!p) { free(d); *out_err = DDBC_E_OPEN; return NULL; }
-    int rc = duckdb_open(p, &d->db);                        /* [SPIKE] */
-    free(p);
+    /* With a key, the process's own database is in memory and the FILE is attached
+     * with the key below; without one, the file is opened directly as in 0.1. */
+    int encrypted = encryption_key_len > 0;
+    int rc = duckdb_open(encrypted ? NULL : p, &d->db);     /* [SPIKE] */
     if (rc != DuckDBSuccess) {
+        free(p);
         set_err(&d->err, "duckdb_open failed");
         *out_err = DDBC_E_OPEN;
         /* The box survives so the caller can read the message, then closes it. */
@@ -187,6 +250,7 @@ void *ddb_open(const uint8_t *path, int path_len,
     DdbConnection tmp;
     memset(&tmp, 0, sizeof(tmp));
     if (duckdb_connect(d->db, &tmp.con) != DuckDBSuccess) { /* [SPIKE] */
+        free(p);
         set_err(&d->err, "duckdb_connect failed while applying settings");
         *out_err = DDBC_E_OPEN;
         return d;
@@ -240,6 +304,24 @@ void *ddb_open(const uint8_t *path, int path_len,
         *out_err = DDBC_E_OPEN;
     }
 
+    if (ok && encrypted) {
+        if (!ddb_install_os_nonce_crypto(d->db)) {
+            set_err(&d->err, "the OS-nonce encryption could not be installed");
+            ok = 0;
+            *out_err = DDBC_E_OPEN;
+        } else {
+            char *k = dup_str(encryption_key, encryption_key_len);
+            if (!k) {
+                ok = 0;
+            } else {
+                ok = attach_encrypted(&tmp, p, k);
+                wipe_free(k);
+                if (ok) d->encrypted = 1;
+            }
+        }
+    }
+    free(p);
+
     if (!ok && *out_err == DDBC_OK) {
         set_err(&d->err, tmp.err ? tmp.err : "applying the mandatory settings failed");
         *out_err = DDBC_E_OPEN;
@@ -258,6 +340,16 @@ void *ddb_connect(void *db, int *out_err) {
     if (duckdb_connect(d->db, &c->con) != DuckDBSuccess) {  /* [SPIKE] */
         set_err(&d->err, "duckdb_connect failed");
         *out_err = DDBC_E_OPEN;
+        free(c);
+        return NULL;
+    }
+    /* `USE` is per connection: without it this one would talk to the empty in-memory
+     * database, and every table of the file would look missing. */
+    if (d->encrypted && !apply_setting(c, "USE " DDB_ENCRYPTED_ALIAS)) {
+        set_err(&d->err, c->err ? c->err : "USE of the encrypted database failed");
+        *out_err = DDBC_E_OPEN;
+        duckdb_disconnect(&c->con);
+        if (c->err) free(c->err);
         free(c);
         return NULL;
     }

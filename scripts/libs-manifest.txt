@@ -1,3 +1,4 @@
+nova_duckdb_crypto
 core_functions_extension
 icu_extension
 duckdb_static

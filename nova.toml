@@ -13,7 +13,7 @@
 
 [package]
 name = "duckdb"
-version = "0.1.1"
+version = "0.2.0"
 description = "DuckDB for Nova: real types (TIMESTAMPTZ, DECIMAL, UUID), Appender, statically linked with core_functions and icu"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nv-lang/nova-duckdb"
@@ -40,7 +40,7 @@ include_dirs = ["native/", "native/duckdb/src/include"]
 # acceptance it never measured. The checker runs in CI right after the build, and a
 # missing manifest is a FAILURE rather than a skip -- comparing nothing and calling
 # it clean is the defect it was written to catch.
-libs = ["core_functions_extension", "icu_extension", "duckdb_static", "duckdb_re2", "duckdb_fmt", "duckdb_utf8proc", "duckdb_hyperloglog", "duckdb_fastpforlib", "duckdb_skiplistlib", "duckdb_mbedtls", "duckdb_yyjson", "duckdb_fsst", "duckdb_zstd", "duckdb_miniz", "duckdb_pg_query", "duckdb_generated_extension_loader", "parquet_extension"]
+libs = ["nova_duckdb_crypto", "core_functions_extension", "icu_extension", "duckdb_static", "duckdb_re2", "duckdb_fmt", "duckdb_utf8proc", "duckdb_hyperloglog", "duckdb_fastpforlib", "duckdb_skiplistlib", "duckdb_mbedtls", "duckdb_yyjson", "duckdb_fsst", "duckdb_zstd", "duckdb_miniz", "duckdb_pg_query", "duckdb_generated_extension_loader", "parquet_extension"]
 # NO SYSTEM LIBRARIES HERE, and the reason is mechanical rather than stylistic.
 # `first_missing_ffi_lib` (compiler-codegen/src/link_prep.rs:60) walks this list and
 # returns the FIRST name whose file is not present under `lib_dirs`. One such name

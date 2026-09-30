@@ -113,6 +113,9 @@ key="$(printf '%s|%s|%s|%s' "$commit" "$ccver" "${cmake_args[*]}" \
 
 if [ "${FORCE:-0}" != "1" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$key" ]; then
   echo "cache hit ($key) - nothing to build. FORCE=1 to rebuild."
+  # The crypto library is NOT in the cache key and takes a second: always built, so
+  # a cache hit cannot leave [ffi] libs naming a file that is not there.
+  "$here/build-crypto.sh"
   exit 0
 fi
 
@@ -150,7 +153,9 @@ if [ ${#missing[@]} -ne 0 ] || [ ${#extra[@]} -ne 0 ]; then
   echo "The library set changed. Update nova.toml's [ffi] libs from the manifest, dependent before dependency, and say so in the commit."
 fi
 
-: > "$manifest"
+# First: nova_duckdb_crypto depends on duckdb_static and duckdb_mbedtls, and a static
+# link resolves left to right (build-crypto.sh builds it).
+echo "nova_duckdb_crypto" > "$manifest"
 for e in "${expected[@]}"; do
   printf '%s\n' "${found[@]}" | grep -qx "$e" && echo "$e" >> "$manifest"
 done
@@ -159,3 +164,4 @@ for x in ${extra[@]+"${extra[@]}"}; do echo "$x" >> "$manifest"; done
 echo "$key" > "$stamp"
 echo "manifest: $manifest ($(wc -l < "$manifest") libraries)"
 echo "stamp:    $stamp"
+"$here/build-crypto.sh"

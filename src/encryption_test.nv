@@ -1,0 +1,120 @@
+// Encryption (0.2): a key in `DbOptions` gives a file DuckDB writes with AES-GCM,
+// nonces from the operating system (native/os_nonce_crypto.cpp).
+//
+//   ./nova.sh test src/ --filter encryption_test
+//
+// Real files, in the system temp directory, each test in its own subdirectory that it
+// empties first. The acceptance is the integrator's (2026-09-30): round trip with the
+// same key, a clear refusal for a wrong one, no plaintext on disk, two connections.
+
+module duckdb.encryption_test
+
+import std.fs.{real_fs, read, create_dir_all, remove_dir_all}
+import std.os.{real_os, temp_dir}
+import duckdb.{Database, DbOptions}
+import duckdb.types.{Value}
+
+const SECRET_ROW = "secret-mail@example.org"
+
+fn scratch(name str) Io -> str {
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro dir = "${base}/nova-duckdb-encryption-${name}"
+    with Fs = real_fs() {
+        ro _ = remove_dir_all(dir.to_path())
+        ro _ = create_dir_all(dir.to_path())
+    }
+    dir
+}
+
+fn keyed(key str) -> DbOptions {
+    mut o = DbOptions.defaults()
+    o.encryption_key = key
+    o
+}
+
+/// Run `setup`, then answer `q` (first cell as text) -- or "REFUSED <message>".
+fn on_file(path str, opts DbOptions, setup []str, q str) Io -> str {
+    mut out = "<no answer>"
+    with Fail[DuckError] = |e| { out = "REFUSED ${e.message()}" } {
+        consume db = Database.open(path, opts)!! {
+            consume con = db.connect()!! {
+                for s in setup { ro _ = con.exec(s)!! }
+                if q != "" {
+                    consume r = con.query(q)!! {
+                        match r.value(0, 0)!! {
+                            Value.Text(t) => { out = t }
+                            _ => { out = "<non-text>" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn seed() -> []str => [
+    "CREATE TABLE t (s VARCHAR)",
+    "INSERT INTO t VALUES ('${SECRET_ROW}')",
+    "CHECKPOINT",
+]
+
+fn bytes_have(path str, needle str) Io -> bool =>
+    with Fs = real_fs() {
+        (read(path.to_path()) ?? []u8.new()).to_str_lossy().contains(needle)
+    }
+
+test "round trip: written with a key, closed, read back with the same key" {
+    ro db = "${scratch("round")}/enc.duckdb"
+    ro key = "k-0123456789abcdef-0123456789abcd"
+    ro wrote = on_file(db, keyed(key), seed(), "SELECT count(*)::VARCHAR FROM t")
+    assert(wrote == "1")
+    ro back = on_file(db, keyed(key), [], "SELECT s FROM t")
+    assert(back == SECRET_ROW)
+}
+
+test "a wrong key is refused with a clear message, not garbage" {
+    ro db = "${scratch("wrong")}/enc.duckdb"
+    ro _ = on_file(db, keyed("k-0123456789abcdef-0123456789abcd"), seed(), "")
+    ro other = on_file(db, keyed("k-ffffffffffffffff-ffffffffffffff"), [], "SELECT s FROM t")
+    assert(other.starts_with("REFUSED"))
+    assert(other.to_ascii_lower().contains("key"))
+    // And no key at all does not open it as a plain file either.
+    ro none = on_file(db, DbOptions.defaults(), [], "SELECT s FROM t")
+    assert(none.starts_with("REFUSED"))
+}
+
+test "no plaintext on disk -- and the control shows the grep can see it" {
+    ro dir = scratch("bytes")
+    ro enc = "${dir}/enc.duckdb"
+    ro plain = "${dir}/plain.duckdb"
+    ro _ = on_file(enc, keyed("k-0123456789abcdef-0123456789abcd"), seed(), "")
+    ro _ = on_file(plain, DbOptions.defaults(), seed(), "")
+    // Without the control, "not found" would hold for a grep that finds nothing ever.
+    assert(bytes_have(plain, SECRET_ROW))
+    assert(!bytes_have(enc, SECRET_ROW))
+}
+
+test "two connections to one encrypted file both see it" {
+    ro db = "${scratch("two")}/enc.duckdb"
+    ro key = "k-0123456789abcdef-0123456789abcd"
+    mut out = "<no answer>"
+    with Fail[DuckError] = |e| { out = "REFUSED ${e.message()}" } {
+        consume d = Database.open(db, keyed(key))!! {
+            consume a = d.connect()!! {
+                ro _ = a.exec("CREATE TABLE t (n INTEGER)")!!
+                ro _ = a.exec("INSERT INTO t VALUES (41)")!!
+                consume b = d.connect()!! {
+                    ro _ = b.exec("INSERT INTO t VALUES (1)")!!
+                    consume r = a.query("SELECT sum(n)::VARCHAR FROM t")!! {
+                        match r.value(0, 0)!! {
+                            Value.Text(t) => { out = t }
+                            _ => { out = "<non-text>" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert(out == "42")
+}

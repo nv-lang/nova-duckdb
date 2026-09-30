@@ -156,6 +156,9 @@ function CacheKey {
 $key = CacheKey
 if ((-not $Force) -and (Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $key)) {
   "cache hit ($key) - nothing to build. Pass -Force to rebuild."
+  # The crypto library is NOT in the cache key and takes a second: always built, so
+  # a cache hit cannot leave [ffi] libs naming a file that is not there.
+  & (Join-Path $PSScriptRoot "build-crypto.ps1") -VcVars $VcVars
   exit 0
 }
 
@@ -222,7 +225,9 @@ if ($missing -or $extra) {
 
 # The manifest is what `[ffi] libs` is filled from, so it is written from what was
 # actually produced -- ordered by the expectation first, then whatever is new.
-$ordered = @()
+# First: nova_duckdb_crypto depends on duckdb_static and duckdb_mbedtls, and a static
+# link resolves left to right (build-crypto.ps1 builds it).
+$ordered = @("nova_duckdb_crypto")
 $ordered += $expected | Where-Object { $found -contains $_ }
 $ordered += $extra
 # WITHOUT a byte-order mark. `-Encoding utf8` on Windows PowerShell 5.1 means WITH
@@ -233,3 +238,4 @@ $ordered += $extra
 Set-Content -Path $stamp -Value $key -Encoding utf8
 "manifest: $manifest ($($ordered.Count) libraries)"
 "stamp:    $stamp"
+& (Join-Path $PSScriptRoot "build-crypto.ps1") -VcVars $VcVars
