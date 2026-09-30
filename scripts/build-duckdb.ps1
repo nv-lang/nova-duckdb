@@ -122,7 +122,11 @@ $cmakeArgs = @(
   # Linux build, 2026-09-09.
   "-DENABLE_JEMALLOC=FALSE",
   "-DBUILD_SHELL=0", "-DBUILD_UNITTESTS=0", "-DBUILD_BENCHMARKS=0",
-  "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+  "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
+  # DuckDB's private mbedTLS gets its own symbol names (native/duckdb_mbedtls_prefix.h):
+  # with nova-tls in the same program the two copies collided (0.2.1). The value repeats
+  # MSVC's defaults because setting CMAKE_CXX_FLAGS replaces them.
+  "-DCMAKE_CXX_FLAGS=`"/DWIN32 /D_WINDOWS /EHsc /FI$(Join-Path $root 'native\duckdb_mbedtls_prefix.h')`""
 ) -join " "
 
 # ── the cache stamp ──────────────────────────────────────────────────────────
@@ -148,7 +152,10 @@ function CacheKey {
   $clang = (& "$Llvm\clang-cl.exe" --version 2>$null | Select-Object -First 1)
   # $cmakeArgs, not a hand-written echo of it. $expected stays in the key as well: it
   # names the archives the build must produce, and changing that list changes the output.
-  $text = "$commit|$clang|$cmakeArgs|" + ($expected -join ",")
+  # The prefix header is named in the flags by PATH only; its CONTENTS change every
+  # object file of DuckDB's mbedTLS, so they are in the key too (0.2.1).
+  $prefixSha = (Get-FileHash -Algorithm SHA256 (Join-Path $root "native\duckdb_mbedtls_prefix.h")).Hash
+  $text = "$commit|$clang|$cmakeArgs|" + ($expected -join ",") + "|$prefixSha"
   $sha = [System.Security.Cryptography.SHA256]::Create()
   ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)) | ForEach-Object { $_.ToString("x2") }) -join ""
 }

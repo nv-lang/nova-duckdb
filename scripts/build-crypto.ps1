@@ -36,12 +36,14 @@ $obj = Join-Path $work "os_nonce_crypto.obj"
 $out = Join-Path $lib "nova_duckdb_crypto.lib"
 $inc1 = Join-Path $root "native\duckdb\src\include"
 $inc2 = Join-Path $root "native\duckdb\third_party\mbedtls\include"
+# The same symbol prefix DuckDB's mbedTLS is built with -- see build-duckdb.ps1.
+$prefix = Join-Path $root "native\duckdb_mbedtls_prefix.h"
 
 if (-not $VcVars) { $VcVars = FindVcVars }
 if (-not $VcVars) { throw "vcvars64.bat not found on D: or C: for any 2022 edition. Pass -VcVars <path>." }
 New-Item -ItemType Directory -Force -Path $work, $lib | Out-Null
 
 "crypto: compiling $src"
-cmd /c "call `"$VcVars`" >nul 2>&1 && cl /nologo /c /O2 /MT /EHsc /std:c++17 /utf-8 /DNDEBUG /DDUCKDB_STATIC_BUILD /I`"$inc1`" /I`"$inc2`" `"$src`" /Fo`"$obj`" && lib /nologo /OUT:`"$out`" `"$obj`""
+cmd /c "call `"$VcVars`" >nul 2>&1 && cl /nologo /c /O2 /MT /EHsc /std:c++17 /utf-8 /DNDEBUG /DDUCKDB_STATIC_BUILD /FI`"$prefix`" /I`"$inc1`" /I`"$inc2`" `"$src`" /Fo`"$obj`" && lib /nologo /OUT:`"$out`" `"$obj`""
 if ($LASTEXITCODE -ne 0) { throw "building nova_duckdb_crypto failed with $LASTEXITCODE" }
 "crypto: $out"

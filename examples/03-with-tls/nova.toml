@@ -1,0 +1,24 @@
+# nova-duckdb together with nova-tls in ONE program, a database opened with a key.
+#
+# This is the regression of 0.2.0: DuckDB vendors its own mbedTLS (3.6.4) and
+# nova-tls vendors another (3.6.2, different configuration). Both exported the same
+# `mbedtls_*` names, the linker bound both copies to one of them, and opening a
+# database WITH A KEY corrupted the heap (0xC0000374, claude-limits 2026-09-30).
+# 0.2.1 renames DuckDB's copy (native/duckdb_mbedtls_prefix.h). The symbol check is
+# scripts/check-mbedtls-prefix.py; this program is the behaviour behind it.
+#
+# The release form of both dependencies is here; the working copy of this package is
+# supplied by `nova.override.toml` (D420, never committed), as in 01-hello.
+
+[lib]
+src = "."
+
+[package]
+name = "with_tls"
+version = "0.0.0"
+description = "nova-duckdb + nova-tls in one binary: an encrypted database and the TLS roots"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+duckdb = { git = "https://github.com/nv-lang/nova-duckdb", version = "0.2" }
+tls = { git = "https://github.com/nv-lang/nova-tls", version = "0.2" }

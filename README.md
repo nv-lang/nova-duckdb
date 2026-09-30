@@ -23,7 +23,8 @@ declared a release; it still behaves like one for anybody who depends on it.
 | Nova surface | written, `nova check` clean |
 | C shim | compiled against the vendored DuckDB 1.5.5 — see [Building](#building) |
 | Tests | run where DuckDB is built (`nova test src`: PASS, 2026-09-30) |
-| Tag | `v0.2.0` — encryption, and the `.of` constructors renamed `.new` (breaking); `v0.1.1` for consumers still on 0.1 |
+| Tag | `v0.2.1` — DuckDB's private mbedTLS renamed, so the package links beside nova-tls; `v0.1.1` for consumers still on 0.1 |
+| `v0.2.0` | **unusable together with nova-tls, fixed in 0.2.1** — see [0.2.1](#021-duckdb-and-nova-tls-in-one-program) |
 
 The package cannot be built where DuckDB has not been built first, and on a fresh
 checkout `nova test src` reports `CC-FAIL` on `src/duckdb_test` with
@@ -196,9 +197,42 @@ against the new version, and run `src/encryption_test.nv`:
    `GenerateRandomData`, not a static or a `RandomEngine`:
    `grep -rn "GenerateRandomData\|RandomEngine" src/storage src/common/encryption*`.
 6. `ATTACH ... (ENCRYPTION_KEY ...)` is still how a file is opened encrypted.
+7. The mbedTLS prefix header still names every external `mbedtls_*` DuckDB defines.
+   Regenerate `native/duckdb_mbedtls_prefix.h` when the vendored mbedTLS changes (the
+   recipe is in `scripts/check-mbedtls-prefix.py`), rebuild, and run both
+   `python scripts/check-mbedtls-prefix.py` and `python scripts/run-with-tls.py`.
 
 A changed signature fails the build; a changed CALL SITE (5) does not -- it would
-silently put `RandomEngine` nonces back. That is why it is on this list by grep.
+silently put `RandomEngine` nonces back. That is why it is on this list by grep. A
+symbol added to DuckDB's mbedTLS (7) does not fail the build either -- it fails the
+prefix check, or, if nobody runs it, a program that also links nova-tls.
+
+## 0.2.1: DuckDB and nova-tls in one program
+
+**0.2.0 is unusable together with nova-tls; use 0.2.1.** The `v0.2.0` tag stays as it
+was.
+
+DuckDB vendors mbedTLS 3.6.4 and nova-tls vendors 3.6.2, with different configurations
+and therefore different struct layouts. Both exported the same 237 `mbedtls_*`
+functions. In a program with both, the linker either refused (duplicate symbols) or,
+with another link order, bound both copies to one definition: opening a database WITH
+A KEY then corrupted the heap (`0xC0000374`, measured in claude-limits on 2026-09-30).
+Nothing failed while the file was opened without a key, which is why 0.2.0 passed its
+own tests.
+
+0.2.1 compiles DuckDB with `native/duckdb_mbedtls_prefix.h` force-included
+(`CMAKE_CXX_FLAGS`, both build scripts), which renames every one of them to
+`nova_ddb_mbedtls_*`. Two checks hold it:
+
+* `scripts/check-mbedtls-prefix.py` reads the built archives and fails on any external
+  `mbedtls_*` name, defined or referenced -- and on finding no prefixed name at all,
+  which would mean the header never reached the compiler;
+* `scripts/run-with-tls.py` builds `examples/03-with-tls` (a key, 2000 rows written,
+  reopened and read, TLS roots parsed before and after) and runs it. Not in the CI
+  guard loop -- Linux CI cannot link C++ yet -- so it runs before every tag.
+
+Nothing changes in the Nova surface. A consumer rebuilds DuckDB once: the prefix header
+is in the build's cache key, so the old archives are not reused.
 
 ## 0.2.0: what changed for a consumer
 

@@ -1,0 +1,86 @@
+// 03-with-tls -- an encrypted database and nova-tls in the same binary.
+//
+//   python scripts/run-with-tls.py        (writes the local override, builds, runs)
+//
+// What it proves: DuckDB's AES-GCM (its private mbedTLS) and nova-tls's mbedTLS
+// both run in one process without binding to each other. Under 0.2.0 this program
+// died with a heap corruption at the first encrypted write.
+//
+// `system_roots()` is not decoration: it is what makes the linker pull nova-tls's
+// native code -- and with it that package's mbedTLS -- into the binary. A program
+// that only imported a nova-tls type would link none of it and pass for the wrong
+// reason.
+
+// EXPECT_STDOUT with-tls: OK
+
+module with_tls
+
+import std.fs.{real_fs, create_dir_all, remove_dir_all}
+import std.os.{real_os, temp_dir}
+import duckdb.{Database, DbOptions, DuckError}
+import duckdb.types.{Value}
+import tls.{system_roots}
+
+const ROWS = 2000
+
+fn scratch() Io -> str {
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro dir = "${base}/nova-duckdb-with-tls"
+    with Fs = real_fs() {
+        ro _ = remove_dir_all(dir.to_path())
+        ro _ = create_dir_all(dir.to_path())
+    }
+    dir
+}
+
+fn keyed() -> DbOptions {
+    mut o = DbOptions.defaults()
+    o.encryption_key = "k-0123456789abcdef-0123456789abcd"
+    o
+}
+
+/// Answer `q` (first cell as text) on the encrypted file after `setup`.
+fn on_file(path str, setup []str, q str) Io -> str {
+    mut out = "<no answer>"
+    with Fail[DuckError] = |e| { out = "REFUSED ${e.message()}" } {
+        consume db = Database.open(path, keyed())!! {
+            consume con = db.connect()!! {
+                for s in setup { ro _ = con.exec(s)!! }
+                consume r = con.query(q)!! {
+                    match r.value(0, 0)!! {
+                        Value.Text(t) => { out = t }
+                        _ => { out = "<non-text>" }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn main() Io -> () {
+    // TLS first: the roots are parsed by nova-tls's mbedTLS before DuckDB's runs.
+    ro roots = match system_roots() {
+        Ok(info) => info
+        Err(e) => panic("with-tls: system roots: ${e}")
+    }
+    println("roots: ${roots.source} (${roots.detail}), ${roots.count}")
+
+    ro db = "${scratch()}/enc.duckdb"
+    ro wrote = on_file(db, [
+        "CREATE TABLE t AS SELECT i, 'row-' || i::VARCHAR AS s FROM range(${ROWS}) r(i)",
+        "CHECKPOINT",
+    ], "SELECT count(*)::VARCHAR FROM t")
+    if wrote != "${ROWS}" { panic("with-tls: write answered ${wrote}") }
+
+    // Closed and reopened: the pages come back through DuckDB's AES-GCM.
+    ro back = on_file(db, [], "SELECT s FROM t WHERE i = ${ROWS - 1}")
+    if back != "row-${ROWS - 1}" { panic("with-tls: read back ${back}") }
+
+    // And TLS again, after DuckDB's crypto has run.
+    match system_roots() {
+        Ok(again) => { if again.count != roots.count { panic("with-tls: roots changed") } }
+        Err(e) => panic("with-tls: system roots, second time: ${e}")
+    }
+    println("with-tls: OK")
+}

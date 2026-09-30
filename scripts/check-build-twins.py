@@ -56,6 +56,11 @@ PLATFORM_ONLY = {
     # /MT, so DuckDB uses the same C runtime as the Nova runtime does. There is no
     # MSVC runtime to select on Linux.
     "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded": "ps1",
+    # The mbedTLS symbol prefix (0.2.1) is ONE flag spelled two ways: MSVC force-
+    # includes with /FI and has to repeat its default CXX flags, clang uses -include.
+    # The parser keeps the first word of each value, which is what these two are.
+    '-DCMAKE_CXX_FLAGS=`"/DWIN32': "ps1",
+    "-DCMAKE_CXX_FLAGS=-include": "sh",
 }
 
 

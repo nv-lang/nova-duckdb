@@ -83,6 +83,9 @@ cmake_args=(
   # would turn every Windows run green while running nothing.
   -DENABLE_JEMALLOC=FALSE
   -DBUILD_SHELL=0 -DBUILD_UNITTESTS=0 -DBUILD_BENCHMARKS=0
+  # DuckDB's private mbedTLS gets its own symbol names (native/duckdb_mbedtls_prefix.h):
+  # with nova-tls in the same program the two copies collided (0.2.1).
+  "-DCMAKE_CXX_FLAGS=-include $root/native/duckdb_mbedtls_prefix.h"
 )
 
 # Every cmake target the link needs. `duckdb_static` alone is NOT enough: the
@@ -108,8 +111,11 @@ targets=(duckdb_static core_functions_extension icu_extension parquet_extension
 cc="${CXX:-clang++}"
 commit="$(git -C "$submodule" rev-parse HEAD 2>/dev/null || echo no-submodule)"
 ccver="$("$cc" --version 2>/dev/null | head -1 || echo unknown)"
-key="$(printf '%s|%s|%s|%s' "$commit" "$ccver" "${cmake_args[*]}" \
-       "$(IFS=,; echo "${expected[*]}")" | sha256sum | cut -d' ' -f1)"
+# The prefix header is named in the flags by PATH only; its CONTENTS change every
+# object file of DuckDB's mbedTLS, so they are in the key too (0.2.1).
+prefix_sha="$(sha256sum "$root/native/duckdb_mbedtls_prefix.h" | cut -d' ' -f1)"
+key="$(printf '%s|%s|%s|%s|%s' "$commit" "$ccver" "${cmake_args[*]}" \
+       "$(IFS=,; echo "${expected[*]}")" "$prefix_sha" | sha256sum | cut -d' ' -f1)"
 
 if [ "${FORCE:-0}" != "1" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$key" ]; then
   echo "cache hit ($key) - nothing to build. FORCE=1 to rebuild."

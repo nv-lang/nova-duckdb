@@ -13,7 +13,9 @@ lib="$root/native/lib"
 cxx="${CXX:-clang++}"
 mkdir -p "$work" "$lib"
 echo "crypto: compiling $root/native/os_nonce_crypto.cpp"
+# The same symbol prefix DuckDB's mbedTLS is built with -- see build-duckdb.sh.
 "$cxx" -c -O2 -std=c++17 -fPIC -DNDEBUG -DDUCKDB_STATIC_BUILD \
+  -include "$root/native/duckdb_mbedtls_prefix.h" \
   -I "$root/native/duckdb/src/include" \
   -I "$root/native/duckdb/third_party/mbedtls/include" \
   "$root/native/os_nonce_crypto.cpp" -o "$work/os_nonce_crypto.o"
