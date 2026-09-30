@@ -21,9 +21,9 @@ declared a release; it still behaves like one for anybody who depends on it.
 | | |
 |---|---|
 | Nova surface | written, `nova check` clean |
-| C shim | written, **never compiled** — see [Building](#building) |
-| Tests | written, **never run** |
-| Tag | none yet |
+| C shim | compiled against the vendored DuckDB 1.5.5 — see [Building](#building) |
+| Tests | run where DuckDB is built (`nova test src`: PASS, 2026-09-30) |
+| Tag | `v0.1.1` — 0.1.0 plus the UTC session zone reaching every connection (2026-09-30) |
 
 The package cannot be built where DuckDB has not been built first, and on a fresh
 checkout `nova test src` reports `CC-FAIL` on `src/duckdb_test` with
