@@ -178,8 +178,12 @@ void *ddb_open(const uint8_t *path, int path_len,
         return d;
     }
 
-    /* The settings of §3 are applied on a throwaway connection: they are database
-     * scoped, and doing it here is what makes them unreachable from Nova. */
+    /* The settings of §3 are applied on a throwaway connection, which is what makes
+     * them unreachable from Nova -- and so each one has to OUTLIVE that connection.
+     * Most are database scoped by nature; `TimeZone` is not: a plain `SET` of it is a
+     * SESSION setting and died with `tmp`, and every caller's connection ran in the
+     * machine's zone (found 2026-09-30 by claude-limits, pinned by duckdb_test's
+     * "the session zone is UTC on a connection the CALLER opens"). Hence `GLOBAL`. */
     DdbConnection tmp;
     memset(&tmp, 0, sizeof(tmp));
     if (duckdb_connect(d->db, &tmp.con) != DuckDBSuccess) { /* [SPIKE] */
@@ -193,7 +197,7 @@ void *ddb_open(const uint8_t *path, int path_len,
      * core_functions function goes to the network and hangs ~22 s (spike). */
     ok = ok && apply_setting(&tmp, "SET autoinstall_known_extensions=false");
     ok = ok && apply_setting(&tmp, "SET autoload_known_extensions=false");
-    ok = ok && apply_setting(&tmp, "SET TimeZone='UTC'");
+    ok = ok && apply_setting(&tmp, "SET GLOBAL TimeZone='UTC'");
 
     if (ok && temp_dir_len > 0) {
         char *t = dup_str(temp_dir, temp_dir_len);

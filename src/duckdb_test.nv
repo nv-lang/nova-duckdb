@@ -161,6 +161,21 @@ test "a time zone conversion works, which means icu is linked" {
     }
 }
 
+test "the session zone is UTC on a connection the CALLER opens, not on the shim's own" {
+    // Found 2026-09-30 by claude-limits: the shim set `TimeZone` on its throwaway
+    // settings connection, and TimeZone is a SESSION setting -- it died with that
+    // connection, and every connection the application opened ran in the machine's
+    // zone. On a Moscow machine `make_timestamp(0)::TIMESTAMPTZ` was -10800 s. The
+    // autoload settings in the same block are global and did hold, which is why the
+    // INSTALL test below never noticed. Both halves are asked: the name of the zone,
+    // and what it does to a zoneless value -- the second is the one that costs data.
+    with Fail[DuckError] = |e| { panic("duckdb: ${e.message()}") } {
+        ro s = with_db(fn(con Connection) -> str =>
+            one_text(con, "SELECT current_setting('TimeZone') || ' ' || epoch(make_timestamp(0)::TIMESTAMPTZ)::BIGINT::VARCHAR"))
+        assert(s == "UTC 0")
+    }
+}
+
 test "INSTALL is refused, because extension loading is off at compile time" {
     // Measured 2026-09-08: the two `SET autoinstall/autoload ... = false` the shim
     // applies govern only the AUTOMATIC path. An explicit INSTALL walks straight past
