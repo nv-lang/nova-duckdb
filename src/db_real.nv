@@ -59,14 +59,14 @@ export fn with_real_db[T](body fn() Db -> T) Io -> T {
                              opts.threads, ro_flag, kb.ptr(), kb.len(), &err)
             }
             if err != DDB_OK { return Err(error_of(err, db_message(h))) }
-            Ok(DbRef.of(h))
+            Ok(DbRef.new(h))
         }
 
         connect(db) -> Result[ConnRef, DuckError] {
             mut err = 0
             ro c = unsafe { ffi.ddb_connect(db.h, &err) }
             if err != DDB_OK { return Err(error_of(err, db_message(db.h))) }
-            Ok(ConnRef.of(c))
+            Ok(ConnRef.new(c))
         }
 
         exec(conn, sql) -> Result[int, DuckError] {
@@ -84,7 +84,7 @@ export fn with_real_db[T](body fn() Db -> T) Io -> T {
             if err != DDB_OK { return Err(error_of(err, conn_message(conn.h))) }
             cursor_of = r
             cursor_row = 0
-            Ok(ResultRef.of(r))
+            Ok(ResultRef.new(r))
         }
 
         describe(result) -> Result[[]Col, DuckError] {

@@ -238,7 +238,7 @@ export fn QueryResult @value(row int, col int) -> Result[Value, DuckError] {
             mut scale = 0
             ro rc = unsafe { ffi.ddb_value_decimal(@h, r, c, &hi, &lo, &scale) }
             if rc != DDB_OK { return Err(error_of(rc, result_message(@h))) }
-            Value.Dec(DecimalValue.of(hi, lo, scale))
+            Value.Dec(DecimalValue.new(hi, lo, scale))
         }
         LogicalType.Varchar => Value.Text(@read_text(r, c))
         LogicalType.Enum => Value.Text(@read_text(r, c))

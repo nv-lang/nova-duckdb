@@ -45,7 +45,7 @@ fn body(con Connection) Fail[DuckError] -> () {
         Value.Text("weekly_scoped"),
         Value.Int(74),
         Value.Bool(false),
-        Value.Dec(DecimalValue.of(0, 2300, 3)),
+        Value.Dec(DecimalValue.new(0, 2300, 3)),
     ])!!
     consume ins = st.execute()!!
     ins.close()

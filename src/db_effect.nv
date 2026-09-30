@@ -54,9 +54,9 @@ export type DbRef value { ro h CDbHandle }
 export type ConnRef value { ro h CConnHandle }
 export type ResultRef value { ro h CResultHandle }
 
-export fn DbRef.of(h CDbHandle) -> DbRef => { h }
-export fn ConnRef.of(h CConnHandle) -> ConnRef => { h }
-export fn ResultRef.of(h CResultHandle) -> ResultRef => { h }
+export fn DbRef.new(h CDbHandle) -> DbRef => { h }
+export fn ConnRef.new(h CConnHandle) -> ConnRef => { h }
+export fn ResultRef.new(h CResultHandle) -> ResultRef => { h }
 
 /// The plumbing, and only the plumbing.
 ///

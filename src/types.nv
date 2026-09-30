@@ -160,7 +160,7 @@ export type DecimalValue value {
     scale int
 }
 
-export fn DecimalValue.of(hi i64, lo u64, scale int) -> DecimalValue => { hi, lo, scale }
+export fn DecimalValue.new(hi i64, lo u64, scale int) -> DecimalValue => { hi, lo, scale }
 
 /// Is this value representable as an `i64` after scaling away? Used by callers
 /// that know their column is small; the halves stay available regardless.

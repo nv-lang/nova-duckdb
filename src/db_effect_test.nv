@@ -25,10 +25,10 @@ import duckdb.ffi.{CDbHandle, CConnHandle, CResultHandle}
 fn two_row_db[T](body fn() Db -> T) -> T {
     mut served = 0
     with Db = effect Db {
-        open(path, opts) -> Result[DbRef, DuckError] { Ok(DbRef.of(0 as CDbHandle)) }
-        connect(db) -> Result[ConnRef, DuckError] { Ok(ConnRef.of(0 as CConnHandle)) }
+        open(path, opts) -> Result[DbRef, DuckError] { Ok(DbRef.new(0 as CDbHandle)) }
+        connect(db) -> Result[ConnRef, DuckError] { Ok(ConnRef.new(0 as CConnHandle)) }
         exec(conn, sql) -> Result[int, DuckError] { Ok(0) }
-        query(conn, sql) -> Result[ResultRef, DuckError] { Ok(ResultRef.of(0 as CResultHandle)) }
+        query(conn, sql) -> Result[ResultRef, DuckError] { Ok(ResultRef.new(0 as CResultHandle)) }
         describe(result) -> Result[[]Col, DuckError] {
             Ok([Col.Required("id", LogicalType.Integer),
                 Col.Nullable("email", LogicalType.Varchar)])
@@ -52,7 +52,7 @@ test "a collection of SUMS crosses the boundary, carrying names and types" {
     // control: the same operation returning a collection of RECORDS is a codegen
     // error (#1070), so this shape is forced rather than preferred.
     ro cols = two_row_db(fn() Db -> []Col {
-        ro r = Db.query(ConnRef.of(0 as CConnHandle), "SELECT 1")!!
+        ro r = Db.query(ConnRef.new(0 as CConnHandle), "SELECT 1")!!
         Db.describe(r)!!
     })
     assert(cols.len() == 2)
@@ -63,7 +63,7 @@ test "a collection of SUMS crosses the boundary, carrying names and types" {
 
 test "nullable is a variant, and it survives the crossing as one" {
     ro cols = two_row_db(fn() Db -> []Col {
-        Db.describe(Db.query(ConnRef.of(0 as CConnHandle), "SELECT 1")!!)!!
+        Db.describe(Db.query(ConnRef.new(0 as CConnHandle), "SELECT 1")!!)!!
     })
     assert(!cols[0].is_nullable())
     assert(cols[1].is_nullable())
@@ -76,7 +76,7 @@ test "rows arrive one operation at a time and end with None, not with an empty r
     mut seen = 0
     mut last_was_none = false
     two_row_db(fn() Db -> () {
-        ro r = Db.query(ConnRef.of(0 as CConnHandle), "SELECT 1")!!
+        ro r = Db.query(ConnRef.new(0 as CConnHandle), "SELECT 1")!!
         mut go = true
         while go {
             match Db.next(r)!! {
@@ -97,7 +97,7 @@ test "a NULL arrives as a NULL and not as a zero" {
     // useless for the case the page most needs to render correctly.
     mut nulls = 0
     two_row_db(fn() Db -> () {
-        ro r = Db.query(ConnRef.of(0 as CConnHandle), "SELECT 1")!!
+        ro r = Db.query(ConnRef.new(0 as CConnHandle), "SELECT 1")!!
         mut go = true
         while go {
             match Db.next(r)!! {
@@ -114,8 +114,8 @@ test "a handler that refuses is as expressible as one that succeeds" {
     // breaking something for real. Here it is a value.
     mut message = ""
     with Db = effect Db {
-        open(path, opts) -> Result[DbRef, DuckError] { Ok(DbRef.of(0 as CDbHandle)) }
-        connect(db) -> Result[ConnRef, DuckError] { Ok(ConnRef.of(0 as CConnHandle)) }
+        open(path, opts) -> Result[DbRef, DuckError] { Ok(DbRef.new(0 as CDbHandle)) }
+        connect(db) -> Result[ConnRef, DuckError] { Ok(ConnRef.new(0 as CConnHandle)) }
         exec(conn, sql) -> Result[int, DuckError] { Ok(0) }
         query(conn, sql) -> Result[ResultRef, DuckError] {
             Err(DuckError.Query("table 'nope' does not exist"))
@@ -126,7 +126,7 @@ test "a handler that refuses is as expressible as one that succeeds" {
         close_conn(conn) -> () { }
         close_db(db) -> () { }
     } {
-        match Db.query(ConnRef.of(0 as CConnHandle), "SELECT * FROM nope") {
+        match Db.query(ConnRef.new(0 as CConnHandle), "SELECT * FROM nope") {
             Ok(_) => { }
             Err(e) => { message = e.message() }
         }
