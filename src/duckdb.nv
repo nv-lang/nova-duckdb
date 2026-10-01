@@ -472,7 +472,7 @@ export fn Statement @execute() -> Result[QueryResult, DuckError] {
     mut err = 0
     ro r = unsafe { ffi.ddb_stmt_execute(@h, &err) }
     if err != DDB_OK { return Err(error_of(err, stmt_message(@h))) }
-    Ok({ h: r })
+    Ok({ h: r, cursor: 0 })
 }
 
 /// Forget the bound parameters, keeping the plan. The point of preparing once and

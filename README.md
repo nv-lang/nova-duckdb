@@ -23,7 +23,8 @@ declared a release; it still behaves like one for anybody who depends on it.
 | Nova surface | written, `nova check` clean |
 | C shim | compiled against the vendored DuckDB 1.5.5 — see [Building](#building) |
 | Tests | run where DuckDB is built (`nova test src`: PASS, 2026-09-30) |
-| Tag | `v0.2.1` — DuckDB's private mbedTLS renamed, so the package links beside nova-tls; `v0.1.1` for consumers still on 0.1 |
+| Tag | `v0.2.2` — builds with nova main from 2026-10-01 on (see [0.2.2](#022-every-field-in-a-result-literal)); `v0.1.1` for consumers still on 0.1 |
+| `v0.2.1` | DuckDB's private mbedTLS renamed, so the package links beside nova-tls; does not build with nova main from 2026-10-01 on |
 | `v0.2.0` | **unusable together with nova-tls, fixed in 0.2.1** — see [0.2.1](#021-duckdb-and-nova-tls-in-one-program) |
 
 The package cannot be built where DuckDB has not been built first, and on a fresh
@@ -206,6 +207,14 @@ A changed signature fails the build; a changed CALL SITE (5) does not -- it woul
 silently put `RandomEngine` nonces back. That is why it is on this list by grep. A
 symbol added to DuckDB's mbedTLS (7) does not fail the build either -- it fails the
 prefix check, or, if nobody runs it, a program that also links nova-tls.
+
+## 0.2.2: every field in a result literal
+
+nova main of 2026-10-01 refuses a record literal that leaves a field out (D02,
+Construction). `QueryResult` was built as `{ h: r }` in `Connection @query` and
+`Statement @execute`, with no `cursor`; both now say `cursor: 0`, the value the field
+had by default. Nothing else changed: the API, the vendored DuckDB and its build are
+0.2.1's. Older compilers build 0.2.2 too.
 
 ## 0.2.1: DuckDB and nova-tls in one program
 
