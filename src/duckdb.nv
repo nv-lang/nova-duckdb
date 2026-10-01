@@ -147,7 +147,7 @@ export fn Connection @query(sql str) -> Result[QueryResult, DuckError] {
     mut err = 0
     ro r = unsafe { ffi.ddb_query(@h, b.ptr(), b.len(), &err) }
     if err != DDB_OK { return Err(error_of(err, conn_message(@h))) }
-    Ok({ h: r })
+    Ok({ h: r, cursor: 0 })
 }
 
 export fn Connection @begin() -> Result[(), DuckError] {
