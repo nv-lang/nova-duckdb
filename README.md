@@ -230,15 +230,21 @@ Nothing failed while the file was opened without a key, which is why 0.2.0 passe
 own tests.
 
 0.2.1 compiles DuckDB with `native/duckdb_mbedtls_prefix.h` force-included
-(`CMAKE_CXX_FLAGS`, both build scripts), which renames every one of them to
-`nova_ddb_mbedtls_*`. Two checks hold it:
+(`CMAKE_CXX_FLAGS`, both build scripts), which renames external functions and data
+symbols to `nova_ddb_mbedtls_*`. The Linux archive exposes two data symbols that the
+Windows archive did not make visible: `mbedtls_ct_zero` and `mbedtls_rsa_info`; both
+must be mapped too. The build scripts use one selected C++ compiler for DuckDB and its
+crypto shim, so their C++ ABIs match. Two checks hold the prefix isolation:
 
 * `scripts/check-mbedtls-prefix.py` reads the built archives and fails on any external
   `mbedtls_*` name, defined or referenced -- and on finding no prefixed name at all,
-  which would mean the header never reached the compiler;
+  which would mean the header never reached the compiler. Its nm parser ignores
+  one-field archive member headings (GNU nm emits these for ELF archives), not symbol
+  records;
 * `scripts/run-with-tls.py` builds `examples/03-with-tls` (a key, 2000 rows written,
-  reopened and read, TLS roots parsed before and after) and runs it. Not in the CI
-  guard loop -- Linux CI cannot link C++ yet -- so it runs before every tag.
+  reopened and read, TLS roots parsed before and after) and runs it. The Linux
+  `pkg-gate` runs it explicitly using a build-only `[ffi] cxx = true` overlay; the
+  checked-in dependency and example manifests remain unchanged.
 
 Nothing changes in the Nova surface. A consumer rebuilds DuckDB once: the prefix header
 is in the build's cache key, so the old archives are not reused.
