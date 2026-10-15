@@ -34,6 +34,9 @@ jobs:
     name: guards + duckdb + nova test src + examples type-check
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      # DuckDB and its C++ crypto shim must share one compiler/ABI.
+      CXX: clang++
     steps:
       - name: Checkout this package
         uses: actions/checkout@v4
@@ -109,6 +112,10 @@ jobs:
             exit 1
           fi
           python3 scripts/check-libs-manifest.py
+
+      - name: The mbedTLS nm parser ignores archive member headers, not symbols
+        working-directory: pkg
+        run: python3 -m unittest discover -s scripts -p test_check_mbedtls_prefix.py -v
 
       # Every guard this repository ships, not a list to keep in step with.
       #
@@ -221,20 +228,25 @@ jobs:
           NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
           NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("nova.toml")
+          text = path.read_text(encoding="utf-8")
+          text, count = re.subn(r"(?m)^\[ffi\]\s*$", "[ffi]\ncxx = true", text, count=1)
+          if count != 1:
+              raise SystemExit("expected one [ffi] section for the build-only C++ driver overlay")
+          path.write_text(text, encoding="utf-8")
+
+          example = Path("examples/03-with-tls/nova.toml")
+          example.write_text(example.read_text(encoding="utf-8") + "\n[ffi]\ncxx = true\n", encoding="utf-8")
+          print("build-only overlay: [ffi] cxx = true in package and TLS integration test manifests")
+          PY
           set -uo pipefail
           test ! -f nova.override.toml || { echo "::error::nova.override.toml reached CI — it must stay gitignored"; exit 1; }
           out=$("${GITHUB_WORKSPACE}/nova/nova-cli/target/release/nova" test src 2>&1); rc=$?
           echo "$out"
-          if [ "$rc" -ne 0 ] && echo "$out" | grep -q "undefined reference to \`operator new\|undefined reference to \`operator delete\|__throw_"; then
-            echo "::error::KNOWN BLOCKER, not a regression: DuckDB is C++ and this"
-            echo "::error::toolchain cannot link a C++ runtime. [ffi] libs is one flat"
-            echo "::error::list with no platform split, and naming stdc++ there would"
-            echo "::error::make Windows degrade the whole package to SKIP. The compiler"
-            echo "::error::has no notion of C++ at all: zero occurrences of cpp/cxx/stdc++"
-            echo "::error::in link_prep.rs, manifest.rs or nova-cli."
-            echo "::error::Windows builds and passes 21/21. Trace and what is needed:"
-            echo "::error::claude-limits probes/ffi-cannot-link-cpp-runtime/FINDING.md"
-          fi
           exit $rc
 
       # The suite reports PASS on a FILE. Reading that as "the tests passed" is how
@@ -269,3 +281,12 @@ jobs:
             exit 1
           fi
           echo "the suite ran $line"
+
+      - name: Encrypted DuckDB plus nova-tls integration
+        working-directory: pkg
+        env:
+          NOVA: ${{ github.workspace }}/nova/nova-cli/target/release/nova
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+        run: python3 scripts/run-with-tls.py
