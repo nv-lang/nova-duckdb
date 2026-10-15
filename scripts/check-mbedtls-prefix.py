@@ -54,10 +54,21 @@ def symbols(nm, path, flag):
     if out.returncode != 0:
         sys.exit(f"MBEDTLS PREFIX: FAILED -- {os.path.basename(nm)} could not read {path}:\n"
                  f"{out.stderr.strip()[:400]}")
+    return parse_nm_symbols(out.stdout)
+
+
+def parse_nm_symbols(output):
+    """Return symbols, ignoring one-field archive-member headers from nm/llvm-nm.
+
+    GNU nm on ELF prints member headings such as ``mbedtls_wrapper.cpp.o:`` as
+    standalone lines. They are filenames, not symbol records; treating the final
+    token as a symbol made the Linux guard fail even when all symbols were prefixed.
+    Actual defined and undefined records always carry at least a type and symbol.
+    """
     names = []
-    for line in out.stdout.splitlines():
+    for line in output.splitlines():
         parts = line.split()
-        if parts:
+        if len(parts) >= 2:
             names.append(parts[-1])
     return names
 
@@ -100,4 +111,5 @@ def main():
     print("MBEDTLS PREFIX: clean")
 
 
-main()
+if __name__ == "__main__":
+    main()

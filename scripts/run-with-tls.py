@@ -6,9 +6,8 @@ one links nova-duckdb and nova-tls into ONE program, opens a database with a key
 writes, reopens, reads, and parses TLS roots before and after. Under 0.2.0 such a
 program either failed to link (duplicate `mbedtls_*`) or, with another link order,
 linked and corrupted the heap at the first encrypted write (claude-limits,
-2026-09-30). It is not in the CI guard loop: Linux CI cannot link C++ yet (see the
-KNOWN BLOCKER in pkg-gate.yml), so this runs where the package tests run -- before
-every tag, on Windows.
+2026-09-30). The Linux package gate runs it with a build-only `[ffi] cxx = true`
+overlay; the released package manifest stays unchanged. It also runs before every tag.
 
     python scripts/run-with-tls.py
     NOVA=path/to/nova NOVA_TLS_PATH=../nova-tls python scripts/run-with-tls.py

@@ -87,6 +87,7 @@
 #define mbedtls_cipher_update nova_ddb_mbedtls_cipher_update
 #define mbedtls_cipher_update_ad nova_ddb_mbedtls_cipher_update_ad
 #define mbedtls_cipher_write_tag nova_ddb_mbedtls_cipher_write_tag
+#define mbedtls_ct_zero nova_ddb_mbedtls_ct_zero
 #define mbedtls_error_add nova_ddb_mbedtls_error_add
 #define mbedtls_gcm_auth_decrypt nova_ddb_mbedtls_gcm_auth_decrypt
 #define mbedtls_gcm_crypt_and_tag nova_ddb_mbedtls_gcm_crypt_and_tag
@@ -226,6 +227,7 @@
 #define mbedtls_rsa_get_padding_mode nova_ddb_mbedtls_rsa_get_padding_mode
 #define mbedtls_rsa_import nova_ddb_mbedtls_rsa_import
 #define mbedtls_rsa_import_raw nova_ddb_mbedtls_rsa_import_raw
+#define mbedtls_rsa_info nova_ddb_mbedtls_rsa_info
 #define mbedtls_rsa_init nova_ddb_mbedtls_rsa_init
 #define mbedtls_rsa_pkcs1_decrypt nova_ddb_mbedtls_rsa_pkcs1_decrypt
 #define mbedtls_rsa_pkcs1_encrypt nova_ddb_mbedtls_rsa_pkcs1_encrypt
