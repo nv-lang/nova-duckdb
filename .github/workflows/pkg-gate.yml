@@ -198,8 +198,15 @@ jobs:
             echo "::error::no example sources found -- the glob has stopped matching, and this step would pass on silence"
             exit 1
           fi
-          out=$("${GITHUB_WORKSPACE}/nova/nova-cli/target/release/nova" check examples 2>&1); rc=$?
-          echo "$out"
+          # Bash's default -e exits on a failed command substitution assignment,
+          # before `rc=$?` can capture the checker status or print its diagnostics.
+          # Disable -e only for this command, then restore it and fail closed below.
+          set +e
+          out=$("${GITHUB_WORKSPACE}/nova/nova-cli/target/release/nova" check examples 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          echo "nova check examples exit code: $rc"
           if [ "$rc" -ne 0 ]; then
             echo "::error::an example no longer type-checks -- the package's public surface changed under its own documentation"
             exit 1
