@@ -65,6 +65,26 @@ need_cmd() {
 need_cmd cmake
 need_cmd ninja
 
+# CMake must use the same C++ compiler as build-crypto.sh. Without this export,
+# CMake silently chooses `c++` (GCC on Ubuntu) while the crypto shim defaults to
+# `clang++`, despite `cc` below naming clang++ for the cache key.
+if [ -z "${CXX:-}" ]; then
+  if command -v clang++ >/dev/null 2>&1; then
+    CXX="$(command -v clang++)"
+  elif command -v g++ >/dev/null 2>&1; then
+    CXX="$(command -v g++)"
+  else
+    echo "error: neither clang++ nor g++ is available; set CXX to the DuckDB C++ compiler" >&2
+    exit 1
+  fi
+else
+  CXX="$(command -v "$CXX")" || {
+    echo "error: CXX '$CXX' is not on PATH" >&2
+    exit 1
+  }
+fi
+export CXX
+
 # ── the cmake flags, defined ONCE ────────────────────────────────────────────
 #
 # Above the cache stamp on purpose: the stamp is keyed on these, and a key computed
@@ -98,9 +118,9 @@ targets=(duckdb_static core_functions_extension icu_extension parquet_extension
 
 # ── the cache stamp ──────────────────────────────────────────────────────────
 #
-# Keyed on the submodule commit, the flags and the compiler version — the three
-# things that change the output. Nothing else, because a cache that misses for an
-# irrelevant reason costs forty minutes.
+# Keyed on the submodule commit, the flags, and the selected compiler path/version/
+# binary hash — the inputs that change the output. Nothing else, because a cache that
+# misses for an irrelevant reason costs forty minutes.
 #
 # Correction 2026-09-08, same defect as the Windows twin carried: the key was built
 # from `expected` (the list of expected LIBRARIES) plus three strings retyped by
@@ -108,14 +128,26 @@ targets=(duckdb_static core_functions_extension icu_extension parquet_extension
 # would have printed "cache hit, nothing to build" and handed the old library over
 # as the new one. The key now hashes "${cmake_args[@]}" itself -- the thing passed
 # to cmake, not a copy of it. A copy is what broke this.
-cc="${CXX:-clang++}"
+cc="$CXX"
 commit="$(git -C "$submodule" rev-parse HEAD 2>/dev/null || echo no-submodule)"
 ccver="$("$cc" --version 2>/dev/null | head -1 || echo unknown)"
+ccsha="$(sha256sum "$cc" | cut -d' ' -f1)"
 # The prefix header is named in the flags by PATH only; its CONTENTS change every
 # object file of DuckDB's mbedTLS, so they are in the key too (0.2.1).
 prefix_sha="$(sha256sum "$root/native/duckdb_mbedtls_prefix.h" | cut -d' ' -f1)"
-key="$(printf '%s|%s|%s|%s|%s' "$commit" "$ccver" "${cmake_args[*]}" \
+key="$(printf '%s|%s|%s|%s|%s|%s|%s' "$commit" "$cc" "$ccver" "$ccsha" "${cmake_args[*]}" \
        "$(IFS=,; echo "${expected[*]}")" "$prefix_sha" | sha256sum | cut -d' ' -f1)"
+
+# CMake caches the compiler on first configure. A changed CXX must never stamp
+# libraries built by the cached compiler under the new compiler's key.
+if [ -f "$build/CMakeCache.txt" ]; then
+  configured_cc="$(sed -n 's/^CMAKE_CXX_COMPILER:[^=]*=//p' "$build/CMakeCache.txt" | head -1)"
+  if [ -n "$configured_cc" ] && [ "$configured_cc" != "$cc" ]; then
+    echo "error: native/build was configured with C++ compiler '$configured_cc', requested '$cc'." >&2
+    echo "       Clear only the generated native/build cache and rerun; refusing a mixed-compiler build." >&2
+    exit 1
+  fi
+fi
 
 if [ "${FORCE:-0}" != "1" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$key" ]; then
   echo "cache hit ($key) - nothing to build. FORCE=1 to rebuild."
