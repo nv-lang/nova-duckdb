@@ -1,0 +1,100 @@
+// Tests for sqltag.nv — every `SqlValue` variant becomes the right `Value`,
+// with the value carried across unchanged.
+//
+//   ./nova.sh test src/ --filter sqltag
+//
+// These tests exist because of registry 221.1 №1637: `SqlValue` grew from six
+// shapes to one variant per numeric type, and the match in `sqltag.nv` went from
+// exhaustive to a compile error (E_MATCH_NON_EXHAUSTIVE, the D65 amendment of
+// №703). The migration is the mapping itself, and the mapping is what these
+// tests pin: each variant by name, each conversion lossless, the choice between
+// `Value.Int` and `Value.UInt` matching the signedness the READ path of
+// `duckdb.nv` reports back.
+//
+// No database is opened: `value_of` is a pure conversion, and a mock would only
+// re-state the assertions below.
+
+module duckdb.sqltag_test
+
+import duckdb.sqltag.{value_of, values_of}
+import duckdb.types.{Value}
+import std.data.sql.{SqlValue}
+
+fn expect_int(v Value, want int) {
+    match v {
+        Value.Int(n) => assert(n == want as i64)
+        _ => assert(false)
+    }
+}
+
+fn expect_uint(v Value, want u64) {
+    match v {
+        Value.UInt(n) => assert(n == want)
+        _ => assert(false)
+    }
+}
+
+fn expect_real(v Value, want f64) {
+    match v {
+        Value.Real(x) => assert(x == want)
+        _ => assert(false)
+    }
+}
+
+test "signed integers land in Value.Int, widened, with the value intact" {
+    expect_int(value_of(SqlValue.Int(-5)), 0 - 5)
+    expect_int(value_of(SqlValue.I8(-8)), 0 - 8)
+    expect_int(value_of(SqlValue.I16(-16)), 0 - 16)
+    expect_int(value_of(SqlValue.I32(-32)), 0 - 32)
+    expect_int(value_of(SqlValue.I64(-64)), 0 - 64)
+    // The top of the widened range, not just small numbers: a conversion that
+    // truncated would pass the cases above.
+    expect_int(value_of(SqlValue.I32(2147483647)), 2147483647)
+}
+
+test "unsigned integers land in Value.UInt, the shape an unsigned column reads back as" {
+    expect_uint(value_of(SqlValue.U8(255)), 255)
+    expect_uint(value_of(SqlValue.U16(65535)), 65535)
+    expect_uint(value_of(SqlValue.U32(4294967295)), 4294967295)
+}
+
+test "floats land in Value.Real, F32 widened exactly" {
+    // 1.5 is exact in both f32 and f64; a widening that rounded would show here.
+    expect_real(value_of(SqlValue.F32(1.5)), 1.5)
+    expect_real(value_of(SqlValue.F64(-2.25)), 0.0 - 2.25)
+}
+
+test "text, bool, bytes and null carry their shape across" {
+    match value_of(SqlValue.Text("abc")) {
+        Value.Text(s) => assert(s == "abc")
+        _ => assert(false)
+    }
+    match value_of(SqlValue.Bool(true)) {
+        Value.Bool(b) => assert(b)
+        _ => assert(false)
+    }
+    // The binding is typed BEFORE the constructor call on purpose: an array
+    // literal straight in the payload position is materialized as `[]int` and
+    // reinterpreted, not converted (registry №1015 class, filed from task 122).
+    ro raw []u8 = [1, 2, 3]
+    match value_of(SqlValue.Bytes(raw)) {
+        Value.Bytes(b) => {
+            assert(b.len() == 3)
+            assert(b[0] == 1)
+            assert(b[2] == 3)
+        }
+        _ => assert(false)
+    }
+    assert(value_of(SqlValue.Null).is_null())
+}
+
+test "values_of keeps order and length across the whole list" {
+    ro out = values_of([SqlValue.Int(1), SqlValue.Text("two"), SqlValue.Null])
+    assert(out.len() == 3)
+    expect_int(out[0], 1)
+    match out[1] {
+        Value.Text(s) => assert(s == "two")
+        _ => assert(false)
+    }
+    assert(out[2].is_null())
+}

@@ -19,12 +19,22 @@
 //
 // ── The one asymmetry, said out loud ────────────────────────────────────────
 //
-// `SqlValue` is deliberately small — six shapes, the ones any SQL database has.
-// This package's `Value` has fourteen, because DuckDB has real types and the whole
-// reason 01.2 chose it was to keep them. So the conversion is total in one
-// direction and partial in the other: every `SqlValue` becomes a `Value`, while a
-// `Value` carrying a timestamp, a UUID or an exact decimal has no `SqlValue` to
-// become. Callers who need those bind through `Statement.@bind` directly.
+// `SqlValue` names one variant per numeric type (registry 221.1 №1637, owner
+// 2026-10-02): `Int`, `I8`..`I64`, `U8`..`U32`, `F32`, `F64`, plus `Text`,
+// `Bool`, `Bytes`, `Null`. This package's `Value` has fourteen shapes, because
+// DuckDB has real types and the whole reason 01.2 chose it was to keep them. So
+// the conversion is total in one direction and partial in the other: every
+// `SqlValue` becomes a `Value`, while a `Value` carrying a timestamp, a UUID or
+// an exact decimal has no `SqlValue` to become. Callers who need those bind
+// through `Statement.@bind` directly.
+//
+// The numeric mapping is chosen to be lossless and round-trip symmetric with the
+// READ path of `duckdb.nv`, not merely to compile: signed integers widen into
+// `Value.Int(i64)` exactly as a TINYINT..BIGINT column reads back; `U8`..`U32`
+// become `Value.UInt(u64)`, the shape an unsigned column reads back as; `F32`
+// widens into `Value.Real(f64)` exactly (every f32 is an f64). `u64` and `uint`
+// have no `SqlValue` variant at all — №1637 makes `${..}` on them a compile
+// error — so the adapter never sees what DuckDB would have to store as UBIGINT.
 
 module duckdb.sqltag
 
@@ -34,14 +44,25 @@ import std.data.sql.{Sql, SqlValue}
 
 /// One `SqlValue` as the parameter this package binds.
 ///
-/// `Bytes` becomes `Value.Bytes` and therefore a BLOB, not a string: the two are
-/// different columns in DuckDB and guessing from content would be worse than either.
+/// Every variant is named — no `_` arm — so a new `SqlValue` shape breaks this
+/// match at compile time instead of silently binding the wrong thing (the D65
+/// amendment behind E_MATCH_NON_EXHAUSTIVE, registry №703). `Bytes` becomes
+/// `Value.Bytes` and therefore a BLOB, not a string: the two are different
+/// columns in DuckDB and guessing from content would be worse than either.
 export fn value_of(v SqlValue) -> Value {
     match v {
-        SqlValue.I(n) => Value.Int(n)
-        SqlValue.F(x) => Value.Real(x)
-        SqlValue.S(s) => Value.Text(s)
-        SqlValue.B(b) => Value.Bool(b)
+        SqlValue.Int(n) => Value.Int(n as i64)
+        SqlValue.I8(n) => Value.Int(n as i64)
+        SqlValue.I16(n) => Value.Int(n as i64)
+        SqlValue.I32(n) => Value.Int(n as i64)
+        SqlValue.I64(n) => Value.Int(n)
+        SqlValue.U8(n) => Value.UInt(n as u64)
+        SqlValue.U16(n) => Value.UInt(n as u64)
+        SqlValue.U32(n) => Value.UInt(n as u64)
+        SqlValue.F32(x) => Value.Real(x as f64)
+        SqlValue.F64(x) => Value.Real(x)
+        SqlValue.Text(s) => Value.Text(s)
+        SqlValue.Bool(b) => Value.Bool(b)
         SqlValue.Bytes(b) => Value.Bytes(b)
         SqlValue.Null => Value.Null
     }
