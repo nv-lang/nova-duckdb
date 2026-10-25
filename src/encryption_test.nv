@@ -12,7 +12,6 @@ module duckdb.encryption_test
 import std.fs.{real_fs, read, create_dir_all, remove_dir_all}
 import std.os.{real_os, temp_dir}
 import duckdb.{Database, DbOptions}
-import duckdb.types.{Value}
 
 const SECRET_ROW = "secret-mail@example.org"
 

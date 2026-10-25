@@ -18,7 +18,6 @@ module with_tls
 import std.fs.{real_fs, create_dir_all, remove_dir_all}
 import std.os.{real_os, temp_dir}
 import duckdb.{Database, DbOptions, DuckError}
-import duckdb.types.{Value}
 import tls.{system_roots}
 
 const ROWS = 2000

@@ -28,7 +28,7 @@ fn text_at(r QueryResult, col int) Fail[DuckError] -> str {
 fn int_at(r QueryResult, col int) Fail[DuckError] -> i64 {
     match r.value(0, col)!! {
         Value.Int(n) => n
-        _ => 0 - 1
+        _ => (0 - 1) as i64
     }
 }
 
