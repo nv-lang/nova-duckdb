@@ -50,6 +50,35 @@ expected=(
 # header says "the two must stay in step: same flags, same cache key, same manifest",
 # and saying it has not been enough.
 
+# The generated loader and the extension archives depend on each other.
+# GNU ld needs a group to rescan them and the C driver needs the C++ runtime.
+# Keep the manifest identical on both platforms by wrapping the Linux loader.
+install_linux_link_group() {
+  [ "$(uname -s)" = Linux ] || return 0
+
+  local loader="$lib/libduckdb_generated_extension_loader.a"
+  local impl="$lib/libduckdb_generated_extension_loader_impl.a"
+  local name
+  # A freshly built archive replaces the wrapper. On a warm build, reuse the
+  # implementation already set aside by a previous invocation.
+  if ar t "$loader" >/dev/null 2>&1; then
+    mv -f "$loader" "$impl"
+  fi
+  if [ ! -s "$impl" ]; then
+    echo "error: missing DuckDB extension loader archive: $impl" >&2
+    exit 1
+  fi
+
+  {
+    printf 'GROUP ( -l:libduckdb_generated_extension_loader_impl.a'
+    while IFS= read -r name; do
+      case "$name" in nova_duckdb_crypto|duckdb_generated_extension_loader) continue ;; esac
+      printf ' -l:lib%s.a' "$name"
+    done < "$manifest"
+    printf ' -lstdc++ )\n'
+  } > "$loader"
+}
+
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "error: '$1' is not on PATH. See the Requirements block at the top of this script." >&2
@@ -122,6 +151,7 @@ if [ "${FORCE:-0}" != "1" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$key" ]
   # The crypto library is NOT in the cache key and takes a second: always built, so
   # a cache hit cannot leave [ffi] libs naming a file that is not there.
   "$here/build-crypto.sh"
+  install_linux_link_group
   exit 0
 fi
 
@@ -167,6 +197,7 @@ for e in "${expected[@]}"; do
 done
 for x in ${extra[@]+"${extra[@]}"}; do echo "$x" >> "$manifest"; done
 
+install_linux_link_group
 echo "$key" > "$stamp"
 echo "manifest: $manifest ($(wc -l < "$manifest") libraries)"
 echo "stamp:    $stamp"
