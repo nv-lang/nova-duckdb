@@ -226,7 +226,7 @@ jobs:
             echo "::error::the checker printed no summary line -- it may not have run"
             exit 1
           fi
-          echo "$plain" | grep -E '^PASS: [0-9]+
+          echo "$plain" | grep -E '^PASS: [0-9]+'
 
       - name: nova test src
         working-directory: pkg
