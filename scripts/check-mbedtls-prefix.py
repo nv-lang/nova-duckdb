@@ -24,6 +24,7 @@ lists this under "What to check on EVERY DuckDB upgrade".
 """
 import glob
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -81,6 +82,18 @@ def main():
     if not libs:
         sys.exit(f"MBEDTLS PREFIX: FAILED -- no libraries in {LIB}; build them first "
                  f"(scripts/build-duckdb.*) -- an empty directory is not a clean one")
+    # Linux links the loader through a GNU ld group. Scan its real archive,
+    # which is also in this list, and keep rejecting unreadable input files.
+    wrapper = Path(LIB) / "libduckdb_generated_extension_loader.a"
+    if str(wrapper) in libs:
+        with wrapper.open("rb") as stream:
+            group = b"GROUP ( -l:libduckdb_generated_extension_loader_impl.a "
+            is_group = stream.read(len(group)) == group
+        if is_group:
+            impl = wrapper.with_name("libduckdb_generated_extension_loader_impl.a")
+            if str(impl) not in libs:
+                sys.exit(f"MBEDTLS PREFIX: FAILED -- missing loader archive {impl}")
+            libs.remove(str(wrapper))
     bad = []
     prefixed = 0
     for path in libs:
