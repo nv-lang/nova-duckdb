@@ -179,7 +179,7 @@ jobs:
       # change with no witness is a signature change nobody can notice.
       #
       # Type-check, not build: building them needs the published tag (their manifests
-      # pull `duckdb` by `version = "0.1"`) and the vendored engine. Type-check is
+      # pull `duckdb` by `version = "0.2"`) and the vendored engine. Type-check is
       # what is available on every push, and it is exactly the half that was failing.
       #
       # Zero examples found is a FAILURE. A glob that stopped matching prints the same
