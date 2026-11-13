@@ -14,4 +14,4 @@ description = "nova-duckdb: 100 000 rows through the Appender, then time_bucket 
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-duckdb = { git = "https://github.com/nv-lang/nova-duckdb", version = "0.1" }
+duckdb = { git = "https://github.com/nv-lang/nova-duckdb", version = "0.2" }
